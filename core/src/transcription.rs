@@ -19,10 +19,10 @@ impl Model {
     }
 }
 
-// Pausenerkennung: 30-ms-Frames, ein Satz endet nach etwa 0,5 s Stille oder spätestens nach 120 s.
+// Pausenerkennung: 30-ms-Frames, eine Äußerung endet nach etwa 1,5 s Stille oder spätestens nach 120 s.
 const FRAME_LEN: usize = (WHISPER_SAMPLE_RATE as usize) * 30 / 1000;
 const PRE_ROLL_FRAMES: usize = 15;
-const END_SILENCE_FRAMES: usize = 17;
+const END_SILENCE_FRAMES: usize = 50;
 const MAX_UTTERANCE_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 120;
 const MIN_SPEECH_FRAMES: usize = 8;
 const MIN_SPEECH_RMS: f32 = 0.004;
@@ -32,6 +32,13 @@ const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 2;
 const COMMIT_TAIL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
 // Ab dieser Fensterlänge wird an bestätigten Wörtern abgeschnitten.
 const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 10;
+// Bestätigte Wörter, die nach einem Satzende folgen müssen, bevor der Satz final wird.
+const SENTENCE_LOOKAHEAD_WORDS: usize = 3;
+// Abkürzungen mit Punkt (ohne Punkte und in Kleinbuchstaben), die kein Satzende markieren.
+const ABBREVIATIONS: &[&str] = &[
+    "dr", "prof", "zb", "dh", "ua", "bzw", "bzgl", "ca", "nr", "hr", "fr", "bspw", "evtl", "ggf", "vgl",
+    "inkl", "geb", "std", "tel", "mio", "u", "v",
+];
 
 /// Wort mit Endposition (in Samples relativ zum Fenster) des Whisper-Segments.
 type Word = (String, usize);
@@ -81,7 +88,7 @@ pub fn run_transcriber(
             match segmenter.push_frame(frame) {
                 Some(utterance) => {
                     let words = transcribe(&mut state, &utterance[stream.offset..], prompt)?;
-                    send(Msg::Final(stream.remaining(&words).join(" ")));
+                    send(Msg::Final(join_words(&stream.remaining(&words))));
                     stream = Stream::default();
                 }
                 // Verworfenes Geräusch: der offene Rest wird zurückgenommen.
@@ -100,9 +107,9 @@ pub fn run_transcriber(
             let words = transcribe(&mut state, window, prompt)?;
             let (newly, tail) = stream.pass(words, window.len());
             if !newly.is_empty() {
-                send(Msg::Final(newly.join(" ")));
+                send(Msg::Final(join_words(&newly)));
             }
-            send(Msg::Partial(tail.join(" ")));
+            send(Msg::Partial(join_words(&tail)));
         }
     }
 
@@ -126,7 +133,9 @@ impl Stream {
     fn pass(&mut self, words: Vec<Word>, window_len: usize) -> (Vec<String>, Vec<String>) {
         let agreed = self.prev.iter().zip(&words).take_while(|(a, b)| word_key(&a.0) == word_key(&b.0)).count();
         let commit_before = window_len.saturating_sub(COMMIT_TAIL_SAMPLES);
-        let stable = words[..agreed].partition_point(|(_, end)| *end <= commit_before);
+        let stable = words[..agreed]
+            .partition_point(|(_, end)| *end <= commit_before)
+            .max(sentence_commit_point(&words[..agreed]));
         let newly = if stable > self.committed {
             let texts = words[self.committed..stable].iter().map(|w| w.0.clone()).collect();
             self.committed = stable;
@@ -137,15 +146,15 @@ impl Stream {
         self.prev = words;
 
         // Abschneiden nur an einer Segmentgrenze, hinter der alle Wörter bestätigt sind.
-        let cut_possible = agreed > 0
-            && self.committed == agreed
-            && (agreed == self.prev.len() || self.prev[agreed].1 > self.prev[agreed - 1].1);
-        if window_len > MAX_WINDOW_SAMPLES && cut_possible {
-            let cut = self.prev[agreed - 1].1;
+        let cut_possible = stable > 0
+            && self.committed == stable
+            && (stable == self.prev.len() || self.prev[stable].1 > self.prev[stable - 1].1);
+        if cut_possible && (window_len > MAX_WINDOW_SAMPLES || ends_sentence(&self.prev[stable - 1].0)) {
+            let cut = self.prev[stable - 1].1;
             self.offset += cut;
             self.prev = self
                 .prev
-                .split_off(agreed)
+                .split_off(stable)
                 .into_iter()
                 .map(|(text, end)| (text, end.saturating_sub(cut)))
                 .collect();
@@ -304,7 +313,9 @@ fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> 
         let end = (segment.end_timestamp().max(0) as usize * 160).min(audio.len());
         words.extend(text.split_whitespace().map(|word| (word.to_string(), end)));
     }
-    Ok(collapse_repeats(words))
+    let mut words = collapse_repeats(words);
+    apply_paragraphs(&mut words);
+    Ok(words)
 }
 
 /// Entfernt Wiederholungsschleifen: Dasselbe Wort bleibt höchstens zweimal in Folge stehen.
@@ -322,4 +333,162 @@ fn collapse_repeats(words: Vec<Word>) -> Vec<Word> {
 
 fn word_key(word: &str) -> String {
     word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+}
+
+/// Setzt vor "Absatz" einen Punkt (statt Komma) und schreibt das folgende Wort groß.
+fn apply_paragraphs(words: &mut [Word]) {
+    for i in 0..words.len() {
+        if word_key(&words[i].0) != "absatz" {
+            continue;
+        }
+        if i > 0 && word_key(&words[i - 1].0) != "absatz" {
+            let prev = &mut words[i - 1].0;
+            if prev.ends_with(',') {
+                prev.pop();
+                prev.push('.');
+            } else if !prev.ends_with(['.', '!', '?']) {
+                prev.push('.');
+            }
+        }
+        if let Some(next) = words.get_mut(i + 1) {
+            if word_key(&next.0) != "absatz" {
+                next.0 = capitalize_first(&next.0);
+            }
+        }
+    }
+}
+
+fn capitalize_first(word: &str) -> String {
+    let mut out = String::new();
+    let mut done = false;
+    for c in word.chars() {
+        if !done && c.is_alphabetic() {
+            out.extend(c.to_uppercase());
+            done = true;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Verbindet Wörter und ersetzt "Absatz" (auch mit Satzzeichen am Rand) durch einen Zeilenumbruch.
+fn join_words(words: &[String]) -> String {
+    let mut out = String::new();
+    for word in words {
+        if word_key(word) == "absatz" {
+            out.push('\n');
+        } else {
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push(' ');
+            }
+            out.push_str(word);
+        }
+    }
+    out
+}
+
+/// Wahr, wenn das Wort mit Satzzeichen endet, das kein Abkürzungspunkt ist.
+fn ends_sentence(word: &str) -> bool {
+    if word_key(word) == "absatz" {
+        return true;
+    }
+    let trimmed = word.trim_end_matches(|c: char| matches!(c, '"' | '\'' | ')' | ']' | '»' | '“' | '”'));
+    match trimmed.chars().last() {
+        Some('!' | '?') => true,
+        Some('.') => {
+            let stem: String = trimmed.trim_end_matches('.').chars().filter(|c| c.is_alphabetic()).collect();
+            !ABBREVIATIONS.contains(&stem.to_lowercase().as_str())
+        }
+        _ => false,
+    }
+}
+
+/// Länge des Präfixes bis zum letzten Satzende, dem genug bestätigte Wörter folgen.
+fn sentence_commit_point(agreed: &[Word]) -> usize {
+    agreed
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(i, (text, _))| ends_sentence(text) && agreed.len() - (*i + 1) >= SENTENCE_LOOKAHEAD_WORDS)
+        .map_or(0, |(i, _)| i + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(list: &[(&str, usize)]) -> Vec<Word> {
+        list.iter().map(|(text, end)| (text.to_string(), *end)).collect()
+    }
+
+    #[test]
+    fn sentence_end_detection() {
+        assert!(ends_sentence("Ende."));
+        assert!(ends_sentence("Wirklich?"));
+        assert!(ends_sentence("gut!\""));
+        assert!(!ends_sentence("Dr."));
+        assert!(!ends_sentence("z.B."));
+        assert!(!ends_sentence("Haus"));
+    }
+
+    #[test]
+    fn sentence_commits_after_lookahead() {
+        let mut stream = Stream::default();
+        let base = words(&[("Hallo.", 8000), ("Wie", 16000), ("geht", 24000), ("es", 32000), ("dir", 40000)]);
+        stream.pass(base, 16000);
+        let longer = words(&[
+            ("Hallo.", 8000),
+            ("Wie", 16000),
+            ("geht", 24000),
+            ("es", 32000),
+            ("dir", 40000),
+            ("gut?", 48000),
+        ]);
+        let (newly, tail) = stream.pass(longer, 16000);
+        assert_eq!(newly, vec!["Hallo.".to_string()]);
+        assert_eq!(tail[0], "Wie");
+        assert_eq!(stream.offset, 8000);
+    }
+
+    #[test]
+    fn no_commit_without_lookahead() {
+        let mut stream = Stream::default();
+        let three = words(&[("Hallo.", 8000), ("Wie", 16000), ("geht", 24000)]);
+        stream.pass(three.clone(), 16000);
+        let (newly, _) = stream.pass(three, 16000);
+        assert!(newly.is_empty());
+    }
+
+    #[test]
+    fn absatz_paragraph_rules() {
+        let mut list = words(&[("Hallo,", 1), ("Absatz,", 2), ("neu", 3), ("Dr", 4), ("Absatz", 5)]);
+        apply_paragraphs(&mut list);
+        let texts: Vec<&str> = list.iter().map(|w| w.0.as_str()).collect();
+        assert_eq!(texts, ["Hallo.", "Absatz,", "Neu", "Dr.", "Absatz"]);
+    }
+
+    #[test]
+    fn absatz_becomes_line_break() {
+        let list = vec!["Hallo,".to_string(), "Absatz,".to_string(), "Neu".to_string(), "ABSATZ".to_string()];
+        assert_eq!(join_words(&list), "Hallo,\nNeu\n");
+    }
+
+    #[test]
+    fn short_pause_keeps_utterance() {
+        let speech = vec![0.1f32; FRAME_LEN];
+        let silence = vec![0.0f32; FRAME_LEN];
+        let mut segmenter = Segmenter::new();
+        for _ in 0..8 {
+            assert!(segmenter.push_frame(&speech).is_none());
+        }
+        for _ in 0..20 {
+            assert!(segmenter.push_frame(&silence).is_none());
+        }
+        for _ in 0..8 {
+            assert!(segmenter.push_frame(&speech).is_none());
+        }
+        let finished = (0..END_SILENCE_FRAMES).find_map(|_| segmenter.push_frame(&silence));
+        assert!(finished.is_some());
+    }
 }

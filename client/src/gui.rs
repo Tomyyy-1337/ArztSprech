@@ -413,7 +413,7 @@ impl App {
                         self.live_partial.clear();
                     }
                     if !text.is_empty() {
-                        if !self.text.is_empty() {
+                        if !self.text.is_empty() && !self.text.ends_with('\n') {
                             self.text.push(' ');
                         }
                         self.text.push_str(&text);
