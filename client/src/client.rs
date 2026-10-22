@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use arztsprech_core::audio;
 use arztsprech_core::protocol::{self, Model, Msg};
 
+
 /// Sendet Mikrofon-Audio an den Server und leitet dessen Nachrichten an `send` weiter.
 /// Beendet die Verbindung, sobald `stop` gesetzt wird.
 pub fn stream_microphone<F>(
