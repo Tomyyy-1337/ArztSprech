@@ -26,6 +26,12 @@ const END_SILENCE_FRAMES: usize = 50;
 const MAX_UTTERANCE_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 120;
 const MIN_SPEECH_FRAMES: usize = 8;
 const MIN_SPEECH_RMS: f32 = 0.004;
+// Stille am Ende wird bis auf diese Länge gekürzt, damit Whisper dort nichts erfindet.
+const TRAIL_PAD_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 3 / 10;
+// Segmente mit höherer no-speech-Wahrscheinlichkeit werden verworfen.
+const NO_SPEECH_MAX: f32 = 0.6;
+// Längste Wortfolge, die als Wiederholungsschleife erkannt wird.
+const MAX_LOOP_WORDS: usize = 8;
 // Während des Sprechens wird das offene Fenster in diesem Abstand neu transkribiert.
 const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 2;
 // Dieser Abstand zum aktuellen Audio bleibt korrigierbar und wird nicht final gesendet.
@@ -278,7 +284,25 @@ impl Resampler {
     }
 }
 
+/// Kürzt Stille am Ende, lässt aber einen kurzen Puffer stehen; reine Stille ergibt leeres Audio.
+fn trim_trailing_silence(audio: &[f32]) -> &[f32] {
+    let mut end = audio.len();
+    loop {
+        if end < FRAME_LEN {
+            return &audio[..0];
+        }
+        let frame = &audio[end - FRAME_LEN..end];
+        let rms = (frame.iter().map(|s| s * s).sum::<f32>() / FRAME_LEN as f32).sqrt();
+        if rms > MIN_SPEECH_RMS {
+            break;
+        }
+        end -= FRAME_LEN;
+    }
+    &audio[..(end + TRAIL_PAD_SAMPLES).min(audio.len())]
+}
+
 fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> Result<Vec<Word>, Box<dyn Error>> {
+    let audio = trim_trailing_silence(audio);
     // Zu kurze Aufnahmen (< 0,25 s) ergeben nur Halluzinationen.
     if audio.len() < (WHISPER_SAMPLE_RATE / 4) as usize {
         return Ok(Vec::new());
@@ -291,6 +315,7 @@ fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> 
     params.set_translate(false);
     params.set_no_context(true);
     params.set_suppress_nst(true);
+    params.set_no_speech_thold(NO_SPEECH_MAX);
     if let Some(prompt) = prompt {
         params.set_initial_prompt(prompt);
     }
@@ -303,6 +328,9 @@ fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> 
 
     let mut words = Vec::new();
     for segment in state.as_iter() {
+        if segment.no_speech_probability() > NO_SPEECH_MAX {
+            continue;
+        }
         let text = segment.to_str_lossy()?;
         let text = text.trim();
         // Geräusch-Annotationen wie "*Glubb*" oder "[Musik]" sind keine Sprache.
@@ -321,14 +349,22 @@ fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> 
     Ok(words)
 }
 
-/// Entfernt Wiederholungsschleifen: Dasselbe Wort bleibt höchstens zweimal in Folge stehen.
+/// Entfernt Wiederholungsschleifen: eine Wortfolge bleibt höchstens zweimal in Folge stehen.
 fn collapse_repeats(words: Vec<Word>) -> Vec<Word> {
     let mut out: Vec<Word> = Vec::new();
     for word in words {
-        let key = word_key(&word.0);
-        let run = out.iter().rev().take_while(|previous| word_key(&previous.0) == key).count();
-        if run < 2 {
-            out.push(word);
+        out.push(word);
+        for n in 1..=MAX_LOOP_WORDS {
+            let len = out.len();
+            if len < 3 * n {
+                continue;
+            }
+            let same = |a: usize, b: usize| (0..n).all(|k| word_key(&out[a + k].0) == word_key(&out[b + k].0));
+            let looping = same(len - 3 * n, len - 2 * n) && same(len - 2 * n, len - n);
+            if looping {
+                out.truncate(len - n);
+                break;
+            }
         }
     }
     out
