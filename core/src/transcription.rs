@@ -28,6 +28,8 @@ const MIN_SPEECH_FRAMES: usize = 8;
 const MIN_SPEECH_RMS: f32 = 0.004;
 // Während des Sprechens wird das offene Fenster in diesem Abstand neu transkribiert.
 const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
+// Dieser Abstand zum aktuellen Audio bleibt korrigierbar und wird nicht final gesendet.
+const COMMIT_TAIL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize / 2;
 // Ab dieser Fensterlänge wird an bestätigten Wörtern abgeschnitten.
 const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 20;
 
@@ -123,9 +125,11 @@ impl Stream {
     /// Vergleicht mit dem letzten Durchlauf; liefert neu bestätigte Wörter und den unbestätigten Rest.
     fn pass(&mut self, words: Vec<Word>, window_len: usize) -> (Vec<String>, Vec<String>) {
         let agreed = self.prev.iter().zip(&words).take_while(|(a, b)| word_key(&a.0) == word_key(&b.0)).count();
-        let newly = if agreed > self.committed {
-            let texts = words[self.committed..agreed].iter().map(|w| w.0.clone()).collect();
-            self.committed = agreed;
+        let commit_before = window_len.saturating_sub(COMMIT_TAIL_SAMPLES);
+        let stable = words[..agreed].partition_point(|(_, end)| *end <= commit_before);
+        let newly = if stable > self.committed {
+            let texts = words[self.committed..stable].iter().map(|w| w.0.clone()).collect();
+            self.committed = stable;
             texts
         } else {
             Vec::new()
