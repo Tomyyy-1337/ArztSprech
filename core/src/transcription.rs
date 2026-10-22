@@ -133,9 +133,12 @@ impl Stream {
     fn pass(&mut self, words: Vec<Word>, window_len: usize) -> (Vec<String>, Vec<String>) {
         let agreed = self.prev.iter().zip(&words).take_while(|(a, b)| word_key(&a.0) == word_key(&b.0)).count();
         let commit_before = window_len.saturating_sub(COMMIT_TAIL_SAMPLES);
+        // "Absatz" wird sofort bestätigt, sonst kann Whisper es im nächsten Durchlauf wieder verwerfen.
+        let absatz_end = words.iter().rposition(|w| word_key(&w.0) == "absatz").map_or(0, |i| i + 1);
         let stable = words[..agreed]
             .partition_point(|(_, end)| *end <= commit_before)
-            .max(sentence_commit_point(&words[..agreed]));
+            .max(sentence_commit_point(&words[..agreed]))
+            .max(absatz_end);
         let newly = if stable > self.committed {
             let texts = words[self.committed..stable].iter().map(|w| w.0.clone()).collect();
             self.committed = stable;
@@ -467,6 +470,14 @@ mod tests {
     fn absatz_commits_without_lookahead() {
         let agreed = words(&[("Hallo,", 8000), ("Absatz", 16000)]);
         assert_eq!(sentence_commit_point(&agreed), 2);
+    }
+
+    #[test]
+    fn absatz_commits_on_first_sight() {
+        let mut stream = Stream::default();
+        let first = words(&[("Hallo.", 8000), ("Absatz", 16000), ("Wie", 24000)]);
+        let (newly, _) = stream.pass(first, 32000);
+        assert_eq!(newly, vec!["Hallo.".to_string(), "Absatz".to_string()]);
     }
 
     #[test]
