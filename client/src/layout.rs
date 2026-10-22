@@ -1,6 +1,6 @@
 use iced::theme::Palette;
-use iced::widget::{button, column, container, pick_list, row, rich_text, scrollable, space, span, text, text_editor, text_input, toggler};
-use iced::{Background, Border, Color, Element, Fill, Length, Theme};
+use iced::widget::{button, column, container, pick_list, row, rich_text, scrollable, span, text, text_editor, text_input};
+use iced::{Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
 use arztsprech_core::protocol::Model;
 
@@ -38,14 +38,6 @@ fn outline_style(_: &Theme) -> container::Style {
     }
 }
 
-fn live_dot_style(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(Color::from_rgb(1.0, 0.0, 0.0))),
-        border: Border { radius: 5.0.into(), ..Default::default() },
-        ..Default::default()
-    }
-}
-
 /// Wrapper so `pick_list` can display a `Model` via `model_label`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ModelChoice(Model);
@@ -62,26 +54,27 @@ impl App {
             return self.settings_view();
         }
         let status_color = rgb(120, 160, 255);
-        let mut status_row = row![text(format!("Status: {}", self.status)).size(12).color(status_color).width(Fill)]
+        let mut status_row = row![container(text(format!("Status: {}", self.status)).size(12).color(status_color)).width(Fill).max_height(32).clip(true)]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center);
-        if self.live {
-            status_row = status_row.push(container("").width(10).height(10).style(live_dot_style));
-        }
+        let settings_icon = container(text("⚙").size(20)).padding(Padding { top: 4.0, ..Default::default() }).center_x(Fill).center_y(Fill);
+        let settings_button = button(settings_icon).on_press(Message::ToggleSettings).style(button::primary).padding(0).width(32).height(32);
+        status_row = status_row.push(settings_button);
         let status_bar = container(status_row).padding([6, 10]).width(Fill).style(surface_style);
 
-        let toolbar = row![
-            button("Kopieren").on_press(Message::Copy),
-            button("Löschen").on_press(Message::Clear),
-            button("Einstellungen").on_press(Message::ToggleSettings),
-            space::horizontal(),
-            text("Automatisch\nEinfügen"),
-            toggler(self.live).on_toggle(Message::ToggleLive),
+        let live_style: fn(&Theme, button::Status) -> button::Style = if self.live { button::success } else { button::primary };
+        let live_button = button("Automatisch einfügen").on_press(Message::ToggleLive(!self.live)).style(live_style).padding([6, 12]).width(Fill);
+
+        let toolbar_row = row![
+            button("Kopieren").on_press(Message::Copy).style(button::primary).padding([6, 12]).width(Length::FillPortion(1)),
+            button("Löschen").on_press(Message::Clear).style(button::primary).padding([6, 12]).width(Length::FillPortion(1)),
+            live_button.width(Length::FillPortion(2)),
         ]
         .spacing(8)
         .align_y(iced::alignment::Vertical::Center);
+        let toolbar = container(toolbar_row).padding([6, 10]).width(Fill).style(surface_style);
 
-        let body = column![status_bar, toolbar, self.transcript_view()].spacing(8).padding(8);
+        let body = column![status_bar, self.transcript_view(), toolbar].spacing(8).padding(8);
         container(body).width(Fill).height(Fill).into()
     }
 
