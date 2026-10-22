@@ -41,6 +41,7 @@ pub fn run() -> eframe::Result {
                 partial: String::new(),
                 status: String::new(),
                 live: false,
+                live_partial: String::new(),
                 enigo: None,
                 server: server.clone(),
                 server_input: server,
@@ -243,6 +244,7 @@ struct App {
     partial: String,
     status: String,
     live: bool,
+    live_partial: String,
     enigo: Option<Enigo>,
     server: String,
     server_input: String,
@@ -293,6 +295,38 @@ impl App {
             }
         }
     }
+
+    /// Only erases the differing tail of the typed text and types the new tail.
+    fn replace_live_partial(&mut self, text: &str) {
+        let common = self.live_partial.chars().zip(text.chars()).take_while(|(a, b)| a == b).count();
+        let erase = self.live_partial.chars().count() - common;
+        for _ in 0..erase {
+            self.send_live_key(enigo::Key::Backspace, enigo::Direction::Click);
+        }
+        let new_tail: String = text.chars().skip(common).collect();
+        if !new_tail.is_empty() {
+            self.type_live(&new_tail);
+        }
+        self.live_partial = text.to_string();
+    }
+
+    fn send_live_key(&mut self, key: enigo::Key, direction: enigo::Direction) {
+        if self.enigo.is_none() {
+            match Enigo::new(&Settings::default()) {
+                Ok(enigo) => self.enigo = Some(enigo),
+                Err(err) => {
+                    self.status = format!("Live-Eingabe nicht verfügbar: {err}");
+                    self.live = false;
+                    return;
+                }
+            }
+        }
+        if let Some(enigo) = self.enigo.as_mut() {
+            if let Err(err) = enigo.key(key, direction) {
+                self.status = format!("Live-Eingabe fehlgeschlagen: {err}");
+            }
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -301,13 +335,21 @@ impl eframe::App for App {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Status(status) => self.status = status,
-                Msg::Partial(text) => self.partial = text,
+                Msg::Partial(text) => {
+                    self.partial = text;
+                    if self.live {
+                        let partial = self.partial.clone();
+                        self.replace_live_partial(&partial);
+                    }
+                }
                 Msg::Final(text) => {
                     self.partial.clear();
+                    if self.live {
+                        let final_text = if text.is_empty() { String::new() } else { format!("{text} ") };
+                        self.replace_live_partial(&final_text);
+                        self.live_partial.clear();
+                    }
                     if !text.is_empty() {
-                        if self.live {
-                            self.type_live(&format!("{text} "));
-                        }
                         if !self.text.is_empty() {
                             self.text.push(' ');
                         }
@@ -341,13 +383,22 @@ impl eframe::App for App {
                     ui.ctx().copy_text(self.text.clone());
                 }
                 let live_toggle = ui.toggle_value(&mut self.live, "Live-Eingabe");
-                if live_toggle.changed() && self.live {
-                    self.text.clear();
-                    self.partial.clear();
+                if live_toggle.changed() {
+                    if self.live {
+                        self.text.clear();
+                        self.partial.clear();
+                        self.live_partial.clear();
+                    } else {
+                        self.replace_live_partial("");
+                    }
                 }
                 if ui.button("Löschen").clicked() {
+                    if self.live {
+                        self.replace_live_partial("");
+                    }
                     self.text.clear();
                     self.partial.clear();
+                    self.live_partial.clear();
                 }
                 if ui.button("Einstellungen").clicked() {
                     self.show_settings = !self.show_settings;
