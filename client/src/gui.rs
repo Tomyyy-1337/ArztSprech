@@ -1,4 +1,6 @@
-use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui;
 use enigo::{Enigo, Keyboard, Settings};
@@ -26,21 +28,23 @@ pub fn run() -> eframe::Result {
         options,
         Box::new(|cc| {
             let (tx, rx) = mpsc::channel();
-            let ctx = cc.egui_ctx.clone();
-            let send = move |msg: Msg| {
-                let _ = tx.send(msg);
-                ctx.request_repaint();
-            };
+            let server = default_server();
+            let stop = Arc::new(AtomicBool::new(false));
+            spawn_backend(&server, stop.clone(), make_send(tx.clone(), cc.egui_ctx.clone()));
             apply_style(&cc.egui_ctx);
-            spawn_backend(send);
             Ok(Box::new(App {
                 rx,
+                tx,
                 text: String::new(),
                 partial: String::new(),
                 status: String::new(),
                 live: false,
                 enigo: None,
                 overflow: false,
+                server: server.clone(),
+                server_input: server,
+                stop,
+                show_settings: false,
             }))
         }),
     )
@@ -50,18 +54,58 @@ pub fn run() -> eframe::Result {
 const DEFAULT_SERVER: &str = "127.0.0.1:7878";
 
 #[cfg(feature = "remote")]
-fn spawn_backend(send: impl Fn(Msg) + Clone + Send + 'static) {
-    let server = std::env::var("ARZTSPRECH_SERVER").unwrap_or_else(|_| DEFAULT_SERVER.to_string());
+fn default_server() -> String {
+    load_server()
+        .or_else(|| std::env::var("ARZTSPRECH_SERVER").ok())
+        .unwrap_or_else(|| DEFAULT_SERVER.to_string())
+}
+
+/// Speicherort: `%APPDATA%\arztsprech\server.txt`.
+fn config_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA").map(|dir| std::path::PathBuf::from(dir).join("arztsprech").join("server.txt"))
+}
+
+#[cfg(feature = "remote")]
+fn load_server() -> Option<String> {
+    let server = std::fs::read_to_string(config_path()?).ok()?;
+    let server = server.trim().to_string();
+    (!server.is_empty()).then_some(server)
+}
+
+fn save_server(server: &str) {
+    if let Some(path) = config_path() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, server);
+    }
+}
+
+#[cfg(not(feature = "remote"))]
+fn default_server() -> String {
+    String::new()
+}
+
+fn make_send(tx: Sender<Msg>, ctx: egui::Context) -> impl Fn(Msg) + Clone + Send + 'static {
+    move |msg: Msg| {
+        let _ = tx.send(msg);
+        ctx.request_repaint();
+    }
+}
+
+#[cfg(feature = "remote")]
+fn spawn_backend(server: &str, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) {
+    let server = server.to_string();
     std::thread::spawn(move || {
         let error_send = send.clone();
-        if let Err(err) = client::stream_microphone(&server, send) {
+        if let Err(err) = client::stream_microphone(&server, stop, send) {
             error_send(Msg::Status(format!("Fehler: {err}")));
         }
     });
 }
 
 #[cfg(not(feature = "remote"))]
-fn spawn_backend(send: impl Fn(Msg) + Clone + Send + 'static) {
+fn spawn_backend(_server: &str, _stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) {
     std::thread::spawn(move || {
         let error_send = send.clone();
         if let Err(err) = run_standalone(send) {
@@ -115,15 +159,34 @@ fn apply_style(ctx: &egui::Context) {
 
 struct App {
     rx: Receiver<Msg>,
+    tx: Sender<Msg>,
     text: String,
     partial: String,
     status: String,
     live: bool,
     enigo: Option<Enigo>,
     overflow: bool,
+    server: String,
+    server_input: String,
+    stop: Arc<AtomicBool>,
+    show_settings: bool,
 }
 
 impl App {
+    /// Beendet die aktuelle Verbindung und verbindet neu mit `server_input`.
+    fn reconnect(&mut self, ctx: &egui::Context) {
+        let server = self.server_input.trim().to_string();
+        if server.is_empty() {
+            return;
+        }
+        self.stop.store(true, Ordering::SeqCst);
+        self.stop = Arc::new(AtomicBool::new(false));
+        self.server = server;
+        save_server(&self.server);
+        self.status = format!("Verbinde mit {} ...", self.server);
+        spawn_backend(&self.server, self.stop.clone(), make_send(self.tx.clone(), ctx.clone()));
+    }
+
     /// Types text into the window that currently has keyboard focus.
     fn type_live(&mut self, text: &str) {
         if self.enigo.is_none() {
@@ -198,8 +261,39 @@ impl eframe::App for App {
                     self.text.clear();
                     self.partial.clear();
                 }
+                if ui.button("Einstellungen").clicked() {
+                    self.show_settings = !self.show_settings;
+                }
             });
             ui.separator();
+            if self.show_settings {
+                let remote = cfg!(feature = "remote");
+                let mut apply = false;
+                egui::Window::new("Einstellungen")
+                    .open(&mut self.show_settings)
+                    .resizable(false)
+                    .show(ui.ctx(), |ui| {
+                        ui.label("Server (IP:Port)");
+                        ui.horizontal(|ui| {
+                            ui.add_enabled(
+                                remote,
+                                egui::TextEdit::singleline(&mut self.server_input).desired_width(180.0),
+                            );
+                            if ui.add_enabled(remote, egui::Button::new("Übernehmen")).clicked() {
+                                apply = true;
+                            }
+                        });
+                        if remote {
+                            ui.weak(format!("Aktuell: {}", self.server));
+                        } else {
+                            ui.weak("Nur mit Feature 'remote' verfügbar.");
+                        }
+                    });
+                if apply {
+                    let ctx = ui.ctx().clone();
+                    self.reconnect(&ctx);
+                }
+            }
             let overflow = self.overflow;
             let font = egui::TextStyle::Body.resolve(ui.style());
             let mut job = egui::text::LayoutJob::default();
