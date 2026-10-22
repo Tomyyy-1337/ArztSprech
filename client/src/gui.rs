@@ -58,6 +58,7 @@ pub fn run() -> eframe::Result {
 
 #[cfg(feature = "remote")]
 const DEFAULT_SERVER: &str = "127.0.0.1:7878";
+const DEFAULT_PROMPT: &str = "Deutschsprachiges gastroenterologisches Diktat. Fachbegriffe: ";
 
 #[cfg(feature = "remote")]
 fn default_server() -> String {
@@ -85,7 +86,7 @@ fn save_server(server: &str) {
 fn load_prompt() -> String {
     config_path("prompt.txt")
         .and_then(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_default()
+    .unwrap_or_else(|| DEFAULT_PROMPT.to_string())
 }
 
 fn save_prompt(prompt: &str) {
