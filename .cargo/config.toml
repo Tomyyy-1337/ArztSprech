@@ -1,0 +1,10 @@
+[env]
+# Nur für die RTX 3080 (Compute Capability 8.6) kompilieren statt für alle CUDA-Architekturen.
+# Für andere GPUs anpassen, z. B. "86;89" für RTX 30xx und 40xx.
+CMAKE_CUDA_ARCHITECTURES = "86"
+# bindgen braucht eine funktionierende libclang; die globale Variable zeigt auf die ESP-Toolchain.
+LIBCLANG_PATH = { value = "C:\\Program Files\\LLVM\\bin", force = true }
+# Vulkan SDK für --features vulkan (whisper-rs-sys build.rs).
+VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
+
+CARGO_TARGET_DIR='C:\avk'
