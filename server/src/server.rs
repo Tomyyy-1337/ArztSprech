@@ -2,9 +2,9 @@ use std::error::Error;
 use std::net::TcpStream;
 use std::sync::mpsc;
 
-use crate::audio::AudioSource;
-use crate::protocol;
-use crate::transcription::{Transcriber, run_transcriber};
+use arztsprech_core::audio::AudioSource;
+use arztsprech_core::protocol;
+use arztsprech_core::transcription::{Transcriber, run_transcriber};
 
 /// Bedient eine Verbindung: Audio kommt vom Client, Nachrichten gehen zurück.
 pub fn serve(connection: TcpStream, transcriber: &Transcriber) -> Result<(), Box<dyn Error>> {

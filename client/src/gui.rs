@@ -2,13 +2,13 @@ use std::sync::mpsc::{self, Receiver};
 
 use eframe::egui;
 
-use crate::protocol::Msg;
+use arztsprech_core::protocol::Msg;
 #[cfg(feature = "remote")]
 use crate::client;
 #[cfg(not(feature = "remote"))]
-use crate::audio;
+use arztsprech_core::audio;
 #[cfg(not(feature = "remote"))]
-use crate::transcription::{DEFAULT_MODEL, Transcriber, run_transcriber};
+use arztsprech_core::transcription::{DEFAULT_MODEL, Transcriber, run_transcriber};
 #[cfg(not(feature = "remote"))]
 use std::error::Error;
 

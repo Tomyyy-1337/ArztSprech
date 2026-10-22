@@ -1,0 +1,24 @@
+[package]
+name = "arztsprech-client"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "arztsprech"
+path = "src/main.rs"
+
+[dependencies]
+arztsprech-core = { path = "../core" }
+eframe = "0.37.0"
+
+[features]
+# Standard: Oberfläche und Transkription in einem Prozess.
+default = ["standalone"]
+standalone = ["arztsprech-core/transcriber"]
+# Oberfläche als Client: Audio geht per TCP an arztsprech-server (ohne Whisper).
+# Bauen mit --no-default-features --features remote.
+remote = []
+# Standard: CPU. Mit --features cuda (NVIDIA, benötigt CUDA Toolkit) oder --features vulkan (AMD/Intel/NVIDIA)
+# wird die GPU genutzt, wenn sie zur Laufzeit verfügbar ist; ansonsten läuft Whisper auf der CPU.
+cuda = ["arztsprech-core/cuda"]
+vulkan = ["arztsprech-core/vulkan"]

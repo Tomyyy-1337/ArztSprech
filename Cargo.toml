@@ -1,35 +1,3 @@
-[package]
-name = "arztsprech"
-version = "0.1.0"
-edition = "2024"
-default-run = "arztsprech"
-
-[lib]
-path = "src/lib.rs"
-
-[[bin]]
-name = "arztsprech"
-path = "src/main.rs"
-
-[[bin]]
-name = "arztsprech-server"
-path = "src/server_main.rs"
-required-features = ["transcriber"]
-
-[features]
-# Standard: Oberfläche und Transkription in einem Prozess.
-default = ["standalone"]
-standalone = ["transcriber"]
-# Oberfläche als Client: Audio geht per TCP an arztsprech-server (ohne Whisper).
-# Bauen mit --no-default-features --features remote.
-remote = []
-transcriber = ["dep:whisper-rs"]
-# Standard: CPU. Mit --features cuda (NVIDIA, benötigt CUDA Toolkit) oder --features vulkan (AMD/Intel/NVIDIA)
-# wird die GPU genutzt, wenn sie zur Laufzeit verfügbar ist; ansonsten läuft Whisper auf der CPU.
-cuda = ["whisper-rs/cuda"]
-vulkan = ["whisper-rs/vulkan"]
-
-[dependencies]
-cpal = "0.18.2"
-eframe = "0.37.0"
-whisper-rs = { version = "0.16.0", optional = true }
+[workspace]
+members = ["core", "server", "client"]
+resolver = "3"

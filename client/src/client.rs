@@ -1,8 +1,8 @@
 use std::error::Error;
 use std::net::TcpStream;
 
-use crate::audio;
-use crate::protocol::{self, Msg};
+use arztsprech_core::audio;
+use arztsprech_core::protocol::{self, Msg};
 
 /// Sendet Mikrofon-Audio an den Server und leitet dessen Nachrichten an `send` weiter.
 pub fn stream_microphone<F>(server: &str, send: F) -> Result<(), Box<dyn Error>>
