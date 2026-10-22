@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 arztsprech-core = { path = "../core" }
-iced = { version = "0.14", default-features = false, features = ["tiny-skia", "tokio"] }
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "smol"] }
 enigo = "0.6.1"
 
 [features]

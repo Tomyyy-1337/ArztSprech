@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
 
 use enigo::{Enigo, Keyboard, Settings};
 use iced::theme::Palette;
@@ -311,7 +312,7 @@ impl App {
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
-            window::frames().map(|_| Message::Tick),
+            iced::time::every(Duration::from_millis(10)).map(|_| Message::Tick),
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
         ])
     }
