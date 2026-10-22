@@ -1,3 +1,7 @@
+# Arztsprech
+
+## Compile
+
 Standalone Usage
 
 ```bash
@@ -15,4 +19,12 @@ Client Only
 ```bash
 $env:ARZTSPRECH_SERVER="127.0.0.1:7878"
 cargo run --release -p arztsprech-client --features remote
+```
+
+
+## Trigger GitHub action
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
 ```
