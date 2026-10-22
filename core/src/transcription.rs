@@ -33,7 +33,7 @@ const COMMIT_TAIL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
 // Ab dieser Fensterlänge wird an bestätigten Wörtern abgeschnitten.
 const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 10;
 // Bestätigte Wörter, die nach einem Satzende folgen müssen, bevor der Satz final wird.
-const SENTENCE_LOOKAHEAD_WORDS: usize = 3;
+const SENTENCE_LOOKAHEAD_WORDS: usize = 2;
 // Abkürzungen mit Punkt (ohne Punkte und in Kleinbuchstaben), die kein Satzende markieren.
 const ABBREVIATIONS: &[&str] = &[
     "dr", "prof", "zb", "dh", "ua", "bzw", "bzgl", "ca", "nr", "hr", "fr", "bspw", "evtl", "ggf", "vgl",
@@ -336,12 +336,21 @@ fn word_key(word: &str) -> String {
 }
 
 /// Setzt vor "Absatz" einen Punkt (statt Komma) und schreibt das folgende Wort groß.
+/// "Doppelpunkt" wird zu ":" und das folgende Wort ebenfalls groß geschrieben.
 fn apply_paragraphs(words: &mut [Word]) {
     for i in 0..words.len() {
-        if word_key(&words[i].0) != "absatz" {
+        let key = word_key(&words[i].0);
+        if key == "doppelpunkt" {
+            if i > 0 && !matches!(word_key(&words[i - 1].0).as_str(), "absatz" | "doppelpunkt") {
+                let prev = &mut words[i - 1].0;
+                if prev.ends_with([',', ';']) {
+                    prev.pop();
+                }
+            }
+            words[i].0 = ":".to_string();
+        } else if key != "absatz" {
             continue;
-        }
-        if i > 0 && word_key(&words[i - 1].0) != "absatz" {
+        } else if i > 0 && word_key(&words[i - 1].0) != "absatz" {
             let prev = &mut words[i - 1].0;
             if prev.ends_with(',') {
                 prev.pop();
@@ -351,7 +360,7 @@ fn apply_paragraphs(words: &mut [Word]) {
             }
         }
         if let Some(next) = words.get_mut(i + 1) {
-            if word_key(&next.0) != "absatz" {
+            if !matches!(word_key(&next.0).as_str(), "absatz" | "doppelpunkt") {
                 next.0 = capitalize_first(&next.0);
             }
         }
@@ -379,7 +388,7 @@ fn join_words(words: &[String]) -> String {
         if word_key(word) == "absatz" {
             out.push('\n');
         } else {
-            if !out.is_empty() && !out.ends_with('\n') {
+            if !out.is_empty() && !out.ends_with('\n') && word != ":" {
                 out.push(' ');
             }
             out.push_str(word);
@@ -404,13 +413,16 @@ fn ends_sentence(word: &str) -> bool {
     }
 }
 
-/// Länge des Präfixes bis zum letzten Satzende, dem genug bestätigte Wörter folgen.
+/// Länge des Präfixes bis zum letzten Satzende, dem genug bestätigte Wörter folgen oder das "Absatz" ist.
 fn sentence_commit_point(agreed: &[Word]) -> usize {
     agreed
         .iter()
         .enumerate()
         .rev()
-        .find(|(i, (text, _))| ends_sentence(text) && agreed.len() - (*i + 1) >= SENTENCE_LOOKAHEAD_WORDS)
+        .find(|(i, (text, _))| {
+            ends_sentence(text)
+                && (word_key(text) == "absatz" || agreed.len() - (*i + 1) >= SENTENCE_LOOKAHEAD_WORDS)
+        })
         .map_or(0, |(i, _)| i + 1)
 }
 
@@ -452,6 +464,12 @@ mod tests {
     }
 
     #[test]
+    fn absatz_commits_without_lookahead() {
+        let agreed = words(&[("Hallo,", 8000), ("Absatz", 16000)]);
+        assert_eq!(sentence_commit_point(&agreed), 2);
+    }
+
+    #[test]
     fn no_commit_without_lookahead() {
         let mut stream = Stream::default();
         let three = words(&[("Hallo.", 8000), ("Wie", 16000), ("geht", 24000)]);
@@ -466,6 +484,16 @@ mod tests {
         apply_paragraphs(&mut list);
         let texts: Vec<&str> = list.iter().map(|w| w.0.as_str()).collect();
         assert_eq!(texts, ["Hallo.", "Absatz,", "Neu", "Dr.", "Absatz"]);
+    }
+
+    #[test]
+    fn doppelpunkt_becomes_colon_and_capitalizes() {
+        let mut list = words(&[("Hallo,", 1), ("Doppelpunkt", 2), ("heute", 3)]);
+        apply_paragraphs(&mut list);
+        let texts: Vec<&str> = list.iter().map(|w| w.0.as_str()).collect();
+        assert_eq!(texts, ["Hallo", ":", "Heute"]);
+        let joined: Vec<String> = list.iter().map(|w| w.0.clone()).collect();
+        assert_eq!(join_words(&joined), "Hallo: Heute");
     }
 
     #[test]

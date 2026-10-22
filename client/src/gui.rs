@@ -42,7 +42,6 @@ fn boot() -> App {
         partial: String::new(),
         status: String::new(),
         live: false,
-        live_partial: String::new(),
         enigo: None,
         server: server.clone(),
         server_input: server,
@@ -295,7 +294,6 @@ struct App {
     partial: String,
     status: String,
     live: bool,
-    live_partial: String,
     enigo: Option<Enigo>,
     server: String,
     server_input: String,
@@ -328,21 +326,14 @@ impl App {
             Message::Tick => self.drain_backend(),
             Message::Copy => return iced::clipboard::write(self.text.clone()),
             Message::Clear => {
-                if self.live {
-                    self.replace_live_partial("");
-                }
                 self.text.clear();
                 self.partial.clear();
-                self.live_partial.clear();
             }
             Message::ToggleLive(live) => {
                 self.live = live;
                 if live {
                     self.text.clear();
                     self.partial.clear();
-                    self.live_partial.clear();
-                } else {
-                    self.replace_live_partial("");
                 }
             }
             Message::ToggleSettings => {
@@ -398,19 +389,12 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Status(status) => self.status = status,
-                Msg::Partial(text) => {
-                    self.partial = text;
-                    if self.live {
-                        let partial = self.partial.clone();
-                        self.replace_live_partial(&partial);
-                    }
-                }
+                Msg::Partial(text) => self.partial = text,
                 Msg::Final(text) => {
                     self.partial.clear();
-                    if self.live {
-                        let final_text = if text.is_empty() || text.ends_with('\n') { text.clone() } else { format!("{text} ") };
-                        self.replace_live_partial(&final_text);
-                        self.live_partial.clear();
+                    if self.live && !text.is_empty() {
+                        let final_text = if text.ends_with('\n') { text.clone() } else { format!("{text} ") };
+                        self.type_live(&final_text);
                     }
                     if !text.is_empty() {
                         if !self.text.is_empty() && !self.text.ends_with('\n') {
@@ -461,43 +445,6 @@ impl App {
         }
     }
 
-    /// Erases back to the start of the first changed word and retypes the rest.
-    fn replace_live_partial(&mut self, text: &str) {
-        let old: Vec<char> = self.live_partial.chars().collect();
-        let new: Vec<char> = text.chars().collect();
-        let mut common = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
-        if common < old.len() {
-            while common > 0 && !old[common - 1].is_whitespace() {
-                common -= 1;
-            }
-        }
-        for _ in common..old.len() {
-            self.send_live_key(enigo::Key::Backspace, enigo::Direction::Click);
-        }
-        let new_tail: String = new[common..].iter().collect();
-        if !new_tail.is_empty() {
-            self.type_live(&new_tail);
-        }
-        self.live_partial = text.to_string();
-    }
-
-    fn send_live_key(&mut self, key: enigo::Key, direction: enigo::Direction) {
-        if self.enigo.is_none() {
-            match Enigo::new(&Settings::default()) {
-                Ok(enigo) => self.enigo = Some(enigo),
-                Err(err) => {
-                    self.status = format!("Automatisch Einfügen nicht verfügbar: {err}");
-                    self.live = false;
-                    return;
-                }
-            }
-        }
-        if let Some(enigo) = self.enigo.as_mut() {
-            if let Err(err) = enigo.key(key, direction) {
-                self.status = format!("Automatisch Einfügen fehlgeschlagen: {err}");
-            }
-        }
-    }
 
     fn view(&self) -> Element<'_, Message> {
         if self.show_settings {
