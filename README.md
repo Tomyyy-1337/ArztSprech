@@ -16,3 +16,4 @@ Client Only
 $env:ARZTSPRECH_SERVER="127.0.0.1:7878"
 cargo run --release -p arztsprech-client --features remote
 ```
+

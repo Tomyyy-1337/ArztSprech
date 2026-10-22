@@ -1,12 +1,8 @@
-//! Little-endian-Framing: Client sendet Sample-Rate und i16-Blöcke, Server sendet getaggten Text.
-
 use std::io::{self, Read, Write};
 
 pub enum Msg {
     Status(String),
-    /// Vorläufiger Text des laufenden Satzes, ersetzt den vorherigen Zwischenstand.
     Partial(String),
-    /// Abgeschlossener Satz (leer, wenn nichts erkannt wurde).
     Final(String),
 }
 

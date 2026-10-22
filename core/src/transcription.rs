@@ -7,15 +7,20 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 pub const DEFAULT_MODEL: &str = "models/ggml-large-v3-turbo.bin";
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
 
-// Pausenerkennung: 30-ms-Frames, ein Satz endet nach 0,5 s Stille oder spätestens nach 25 s.
+// Pausenerkennung: 30-ms-Frames, ein Satz endet nach 0,5 s Stille oder spätestens nach 120 s.
 const FRAME_LEN: usize = (WHISPER_SAMPLE_RATE as usize) * 30 / 1000;
 const PRE_ROLL_FRAMES: usize = 15;
 const END_SILENCE_FRAMES: usize = 17;
-const MAX_UTTERANCE_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 25;
+const MAX_UTTERANCE_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 120;
 const MIN_SPEECH_FRAMES: usize = 8;
 const MIN_SPEECH_RMS: f32 = 0.004;
-// Während des Sprechens wird der bisherige Satz in diesem Abstand erneut transkribiert.
-const PARTIAL_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 3 / 4;
+// Während des Sprechens wird das offene Fenster in diesem Abstand neu transkribiert.
+const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
+// Ab dieser Fensterlänge wird an bestätigten Wörtern abgeschnitten.
+const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 20;
+
+/// Wort mit Endposition (in Samples relativ zum Fenster) des Whisper-Segments.
+type Word = (String, usize);
 
 pub struct Transcriber {
     ctx: WhisperContext,
@@ -48,28 +53,95 @@ pub fn run_transcriber(
 
     let mut resampler = Resampler::new(source.sample_rate, WHISPER_SAMPLE_RATE);
     let mut segmenter = Segmenter::new();
+    let mut stream = Stream::default();
     let mut pending: Vec<f32> = Vec::new();
-    let mut last_partial_len = 0;
 
     // Der Stream liefert Audio im Hintergrund; hier wird es in Frames zerlegt und transkribiert.
     while let Ok(chunk) = source.rx.recv() {
         pending.extend(resampler.process(&chunk));
         let mut frames = pending.chunks_exact(FRAME_LEN);
         for frame in frames.by_ref() {
-            if let Some(utterance) = segmenter.push_frame(frame) {
-                last_partial_len = 0;
-                send(Msg::Final(transcribe(&mut state, &utterance, prompt.as_deref())?));
+            let was_speaking = segmenter.in_speech();
+            match segmenter.push_frame(frame) {
+                Some(utterance) => {
+                    let words = transcribe(&mut state, &utterance[stream.offset..], prompt)?;
+                    send(Msg::Final(stream.remaining(&words).join(" ")));
+                    stream = Stream::default();
+                }
+                // Verworfenes Geräusch: der offene Rest wird zurückgenommen.
+                None if was_speaking && !segmenter.in_speech() => {
+                    send(Msg::Partial(String::new()));
+                    stream = Stream::default();
+                }
+                None => {}
             }
         }
         pending = frames.remainder().to_vec();
 
-        if segmenter.in_speech() && segmenter.utterance().len() >= last_partial_len + PARTIAL_INTERVAL_SAMPLES {
-            last_partial_len = segmenter.utterance().len();
-            send(Msg::Partial(transcribe(&mut state, segmenter.utterance(), prompt.as_deref())?));
+        if segmenter.in_speech() && segmenter.utterance().len() >= stream.last_pass_len + PASS_INTERVAL_SAMPLES {
+            stream.last_pass_len = segmenter.utterance().len();
+            let window = &segmenter.utterance()[stream.offset..];
+            let words = transcribe(&mut state, window, prompt)?;
+            let (newly, tail) = stream.pass(words, window.len());
+            if !newly.is_empty() {
+                send(Msg::Final(newly.join(" ")));
+            }
+            send(Msg::Partial(tail.join(" ")));
         }
     }
 
     Ok(())
+}
+
+/// Rollendes Fenster der laufenden Äußerung mit Wörtern, die noch nicht bestätigt sind.
+#[derive(Default)]
+struct Stream {
+    /// Samples der Äußerung, die bereits abgeschnitten wurden.
+    offset: usize,
+    /// Anzahl der Wörter im Fenster, die bereits als final gesendet wurden.
+    committed: usize,
+    /// Hypothese des letzten Durchlaufs.
+    prev: Vec<Word>,
+    last_pass_len: usize,
+}
+
+impl Stream {
+    /// Vergleicht mit dem letzten Durchlauf; liefert neu bestätigte Wörter und den unbestätigten Rest.
+    fn pass(&mut self, words: Vec<Word>, window_len: usize) -> (Vec<String>, Vec<String>) {
+        let agreed = self.prev.iter().zip(&words).take_while(|(a, b)| word_key(&a.0) == word_key(&b.0)).count();
+        let newly = if agreed > self.committed {
+            let texts = words[self.committed..agreed].iter().map(|w| w.0.clone()).collect();
+            self.committed = agreed;
+            texts
+        } else {
+            Vec::new()
+        };
+        self.prev = words;
+
+        // Abschneiden nur an einer Segmentgrenze, hinter der alle Wörter bestätigt sind.
+        let cut_possible = agreed > 0
+            && self.committed == agreed
+            && (agreed == self.prev.len() || self.prev[agreed].1 > self.prev[agreed - 1].1);
+        if window_len > MAX_WINDOW_SAMPLES && cut_possible {
+            let cut = self.prev[agreed - 1].1;
+            self.offset += cut;
+            self.prev = self
+                .prev
+                .split_off(agreed)
+                .into_iter()
+                .map(|(text, end)| (text, end.saturating_sub(cut)))
+                .collect();
+            self.committed = 0;
+        }
+
+        let tail = self.remaining(&self.prev);
+        (newly, tail)
+    }
+
+    /// Wörter einer abschließenden Transkription, die noch nicht gesendet wurden.
+    fn remaining(&self, words: &[Word]) -> Vec<String> {
+        words.get(self.committed..).unwrap_or_default().iter().map(|w| w.0.clone()).collect()
+    }
 }
 
 /// Erkennt Sprechpausen anhand der Lautstärke und liefert abgeschlossene Äußerungen.
@@ -176,10 +248,10 @@ impl Resampler {
     }
 }
 
-fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> Result<String, Box<dyn Error>> {
+fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> Result<Vec<Word>, Box<dyn Error>> {
     // Zu kurze Aufnahmen (< 0,25 s) ergeben nur Halluzinationen.
     if audio.len() < (WHISPER_SAMPLE_RATE / 4) as usize {
-        return Ok(String::new());
+        return Ok(Vec::new());
     }
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
@@ -199,31 +271,37 @@ fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> 
 
     state.full(params, audio)?;
 
-    let mut text = String::new();
+    let mut words = Vec::new();
     for segment in state.as_iter() {
-        let segment = segment.to_str_lossy()?;
-        let segment = segment.trim();
+        let text = segment.to_str_lossy()?;
+        let text = text.trim();
         // Geräusch-Annotationen wie "*Glubb*" oder "[Musik]" sind keine Sprache.
         let is_annotation = [('*', '*'), ('[', ']'), ('(', ')')]
             .iter()
-            .any(|&(open, close)| segment.starts_with(open) && segment.ends_with(close));
-        if !is_annotation {
-            text.push_str(segment);
-            text.push(' ');
+            .any(|&(open, close)| text.starts_with(open) && text.ends_with(close));
+        if is_annotation {
+            continue;
         }
+        // Whisper-Zeitstempel sind in 10-ms-Schritten angegeben.
+        let end = (segment.end_timestamp().max(0) as usize * 160).min(audio.len());
+        words.extend(text.split_whitespace().map(|word| (word.to_string(), end)));
     }
-    Ok(collapse_repeats(&text))
+    Ok(collapse_repeats(words))
 }
 
 /// Entfernt Wiederholungsschleifen: Dasselbe Wort bleibt höchstens zweimal in Folge stehen.
-fn collapse_repeats(text: &str) -> String {
-    let key = |word: &str| word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-    let mut words: Vec<&str> = Vec::new();
-    for word in text.split_whitespace() {
-        let run = words.iter().rev().take_while(|previous| key(previous) == key(word)).count();
+fn collapse_repeats(words: Vec<Word>) -> Vec<Word> {
+    let mut out: Vec<Word> = Vec::new();
+    for word in words {
+        let key = word_key(&word.0);
+        let run = out.iter().rev().take_while(|previous| word_key(&previous.0) == key).count();
         if run < 2 {
-            words.push(word);
+            out.push(word);
         }
     }
-    words.join(" ")
+    out
+}
+
+fn word_key(word: &str) -> String {
+    word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
 }
