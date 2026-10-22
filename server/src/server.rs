@@ -9,14 +9,14 @@ use arztsprech_core::transcription::{Transcriber, run_transcriber};
 /// Alle geladenen Modelle; jede Verbindung nutzt das vom Client gewählte.
 pub struct Transcribers {
     pub turbo: Transcriber,
-    pub large_v3: Transcriber,
+    pub german_turbo: Transcriber,
 }
 
 impl Transcribers {
     pub fn get(&self, model: Model) -> &Transcriber {
         match model {
             Model::Turbo => &self.turbo,
-            Model::LargeV3 => &self.large_v3,
+            Model::GermanTurbo => &self.german_turbo,
         }
     }
 }

@@ -7,14 +7,14 @@ use crate::audio::AudioSource;
 use crate::protocol::{Model, Msg};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
-pub const DEFAULT_MODEL: &str = "models/ggml-large-v3-turbo.bin";
+pub const DEFAULT_MODEL: &str = "models/german-turbo.bin";
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
 
 impl Model {
     pub fn path(self) -> &'static str {
         match self {
             Model::Turbo => "models/ggml-large-v3-turbo.bin",
-            Model::LargeV3 => "models/ggml-large-v3.bin",
+            Model::GermanTurbo => "models/german-turbo.bin",
         }
     }
 }

@@ -97,7 +97,7 @@ fn default_model() -> Model {
     config_path("model.txt")
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|key| model_from_key(key.trim()))
-        .unwrap_or(Model::Turbo)
+        .unwrap_or(Model::GermanTurbo)
 }
 
 fn save_model(model: Model) {
@@ -116,7 +116,7 @@ fn write_config(file: &str, content: &str) {
 fn model_key(model: Model) -> &'static str {
     match model {
         Model::Turbo => "turbo",
-        Model::LargeV3 => "large-v3",
+        Model::GermanTurbo => "german-turbo",
     }
 }
 
@@ -127,7 +127,7 @@ fn model_from_key(key: &str) -> Option<Model> {
 fn model_label(model: Model) -> &'static str {
     match model {
         Model::Turbo => "large-v3-turbo (schnell)",
-        Model::LargeV3 => "large-v3 (genauer)",
+        Model::GermanTurbo => "german-turbo (deutsche Fachbegriffe)",
     }
 }
 
@@ -495,7 +495,7 @@ impl eframe::App for App {
                     },
                 );
             }
-            let out = egui::ScrollArea::vertical()
+            egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .stick_to_bottom(true)
                 .show(ui, |ui| {

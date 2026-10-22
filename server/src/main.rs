@@ -10,9 +10,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let listen = std::env::var("ARZTSPRECH_LISTEN").unwrap_or_else(|_| "0.0.0.0:7878".to_string());
     println!("Lade {}", Model::Turbo.path());
     let turbo = Transcriber::load(Model::Turbo.path())?;
-    println!("Lade {}", Model::LargeV3.path());
-    let large_v3 = Transcriber::load(Model::LargeV3.path())?;
-    let transcriber = Arc::new(Transcribers { turbo, large_v3 });
+    println!("Lade {}", Model::GermanTurbo.path());
+    let german_turbo = Transcriber::load(Model::GermanTurbo.path())?;
+    let transcriber = Arc::new(Transcribers { turbo, german_turbo });
 
     let listener = TcpListener::bind(&listen)?;
     println!("Server lauscht auf {listen}");

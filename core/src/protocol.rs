@@ -10,11 +10,11 @@ pub enum Msg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Model {
     Turbo,
-    LargeV3,
+    GermanTurbo,
 }
 
 impl Model {
-    pub const ALL: [Model; 2] = [Model::Turbo, Model::LargeV3];
+    pub const ALL: [Model; 2] = [Model::Turbo, Model::GermanTurbo];
 }
 
 const MAX_AUDIO_SAMPLES: usize = 16_000 * 10;
@@ -52,14 +52,14 @@ pub fn read_hello(r: &mut impl Read) -> io::Result<(u32, Model, String)> {
 fn model_to_byte(model: Model) -> u8 {
     match model {
         Model::Turbo => 0,
-        Model::LargeV3 => 1,
+        Model::GermanTurbo => 1,
     }
 }
 
 fn model_from_byte(byte: u8) -> Option<Model> {
     match byte {
         0 => Some(Model::Turbo),
-        1 => Some(Model::LargeV3),
+        1 => Some(Model::GermanTurbo),
         _ => None,
     }
 }
