@@ -11,6 +11,7 @@ use arztsprech_core::protocol::{self, Model, Msg};
 pub fn stream_microphone<F>(
     server: &str,
     model: Model,
+    prompt: &str,
     stop: Arc<AtomicBool>,
     send: F,
 ) -> Result<(), Box<dyn Error>>
@@ -19,7 +20,7 @@ where
 {
     let source = audio::open_microphone()?;
     let mut writer = TcpStream::connect(server)?;
-    protocol::write_hello(&mut writer, source.sample_rate, model)?;
+    protocol::write_hello(&mut writer, source.sample_rate, model, prompt)?;
 
     let mut reader = writer.try_clone()?;
     let reply_send = send.clone();

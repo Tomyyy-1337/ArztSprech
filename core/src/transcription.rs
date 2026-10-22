@@ -36,20 +36,16 @@ type Word = (String, usize);
 
 pub struct Transcriber {
     ctx: WhisperContext,
-    prompt: Option<String>,
 }
 
 impl Transcriber {
     pub fn load(model_path: &str) -> Result<Self, Box<dyn Error>> {
-        // Optionaler Hinweistext für Fachbegriffe; kann Whisper auch zu Halluzinationen verleiten.
-        let prompt = std::env::var("ARZTSPRECH_PROMPT").ok();
-
         // Nutzt die GPU, sofern ein im Build aktiviertes Backend (cuda/vulkan) ein Gerät findet, sonst die CPU.
         let mut ctx_params = WhisperContextParameters::default();
         let gpu_device = std::env::var("ARZTSPRECH_GPU_DEVICE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         ctx_params.use_gpu(true).flash_attn(true).gpu_device(gpu_device);
         let ctx = WhisperContext::new_with_params(model_path, ctx_params)?;
-        Ok(Self { ctx, prompt })
+        Ok(Self { ctx })
     }
 }
 
@@ -58,9 +54,9 @@ pub fn run_transcriber(
     transcriber: &Transcriber,
     source: AudioSource,
     stop: &AtomicBool,
+    prompt: Option<&str>,
     mut send: impl FnMut(Msg),
 ) -> Result<(), Box<dyn Error>> {
-    let prompt = transcriber.prompt.as_deref();
     let mut state = transcriber.ctx.create_state()?;
     send(Msg::Status(format!("Bereit – {}", source.description)));
 

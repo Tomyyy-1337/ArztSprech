@@ -30,8 +30,9 @@ pub fn run() -> eframe::Result {
             let (tx, rx) = mpsc::channel();
             let server = default_server();
             let model = default_model();
+            let prompt = load_prompt();
             let stop = Arc::new(AtomicBool::new(false));
-            let backend = spawn_backend(&server, model, stop.clone(), make_send(tx.clone(), cc.egui_ctx.clone()));
+            let backend = spawn_backend(&server, model, &prompt, stop.clone(), make_send(tx.clone(), cc.egui_ctx.clone()));
             apply_style(&cc.egui_ctx);
             Ok(Box::new(App {
                 rx,
@@ -45,6 +46,8 @@ pub fn run() -> eframe::Result {
                 server: server.clone(),
                 server_input: server,
                 model,
+                prompt: prompt.clone(),
+                prompt_input: prompt,
                 stop,
                 show_settings: false,
                 backend: Some(backend),
@@ -77,6 +80,16 @@ fn load_server() -> Option<String> {
 
 fn save_server(server: &str) {
     write_config("server.txt", server);
+}
+
+fn load_prompt() -> String {
+    config_path("prompt.txt")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default()
+}
+
+fn save_prompt(prompt: &str) {
+    write_config("prompt.txt", prompt);
 }
 
 fn default_model() -> Model {
@@ -130,21 +143,23 @@ fn make_send(tx: Sender<Msg>, ctx: egui::Context) -> impl Fn(Msg) + Clone + Send
 }
 
 #[cfg(feature = "remote")]
-fn spawn_backend(server: &str, model: Model, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
+fn spawn_backend(server: &str, model: Model, prompt: &str, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
     let server = server.to_string();
+    let prompt = prompt.to_string();
     std::thread::spawn(move || {
         let error_send = send.clone();
-        if let Err(err) = client::stream_microphone(&server, model, stop, send) {
+        if let Err(err) = client::stream_microphone(&server, model, &prompt, stop, send) {
             error_send(Msg::Status(format!("Fehler: {err}")));
         }
     })
 }
 
 #[cfg(not(feature = "remote"))]
-fn spawn_backend(_server: &str, model: Model, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
+fn spawn_backend(_server: &str, model: Model, prompt: &str, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
+    let prompt = prompt.to_string();
     std::thread::spawn(move || {
         let error_send = send.clone();
-        if let Err(err) = run_standalone(model, stop, send) {
+        if let Err(err) = run_standalone(model, &prompt, stop, send) {
             error_send(Msg::Status(format!("Fehler: {err}")));
         }
     })
@@ -173,7 +188,7 @@ fn cached_transcriber(model: Model) -> Result<&'static Transcriber, Box<dyn Erro
 }
 
 #[cfg(not(feature = "remote"))]
-fn run_standalone(model: Model, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Send + 'static) -> Result<(), Box<dyn Error>> {
+fn run_standalone(model: Model, prompt: &str, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Send + 'static) -> Result<(), Box<dyn Error>> {
     let gate = stop.clone();
     let send = move |msg: Msg| {
         if !gate.load(Ordering::SeqCst) {
@@ -182,7 +197,8 @@ fn run_standalone(model: Model, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Send
     };
     send(Msg::Status(format!("Lade Modell {} ...", model_label(model))));
     let transcriber = cached_transcriber(model)?;
-    run_transcriber(transcriber, audio::open_microphone()?, &stop, send)
+    let prompt = (!prompt.trim().is_empty()).then_some(prompt);
+    run_transcriber(transcriber, audio::open_microphone()?, &stop, prompt, send)
 }
 
 fn apply_style(ctx: &egui::Context) {
@@ -232,6 +248,8 @@ struct App {
     server: String,
     server_input: String,
     model: Model,
+    prompt: String,
+    prompt_input: String,
     stop: Arc<AtomicBool>,
     show_settings: bool,
     backend: Option<std::thread::JoinHandle<()>>,
@@ -255,7 +273,7 @@ impl App {
         self.stop = Arc::new(AtomicBool::new(false));
         self.server = server;
         self.status = format!("Verbinde mit {} ...", self.server);
-        self.backend = Some(spawn_backend(&self.server, self.model, self.stop.clone(), make_send(self.tx.clone(), ctx.clone())));
+        self.backend = Some(spawn_backend(&self.server, self.model, &self.prompt, self.stop.clone(), make_send(self.tx.clone(), ctx.clone())));
     }
 
     /// Types text into the window that currently has keyboard focus.
@@ -340,11 +358,12 @@ impl eframe::App for App {
             if self.show_settings {
                 let remote = cfg!(feature = "remote");
                 let mut apply = false;
+                let mut apply_prompt = false;
                 let mut model_changed = false;
                 let mut show_settings = self.show_settings;
                 egui::Window::new("Einstellungen")
                     .open(&mut show_settings)
-                    .resizable(false)
+                    .resizable(true)
                     .default_width(320.0)
                     .show(ui.ctx(), |ui| {
                             egui::ScrollArea::vertical()
@@ -372,6 +391,16 @@ impl eframe::App for App {
                                             }
                                         });
                                     model_changed = self.model != before;
+                                    ui.separator();
+                                    ui.label("Systemprompt");
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut self.prompt_input)
+                                            .desired_width(300.0)
+                                            .desired_rows(5),
+                                    );
+                                    if ui.button("Systemprompt übernehmen").clicked() {
+                                        apply_prompt = true;
+                                    }
                                 });
                     });
                 self.show_settings = show_settings;
@@ -381,6 +410,13 @@ impl eframe::App for App {
                 }
                 if model_changed {
                     save_model(self.model);
+                    let ctx = ui.ctx().clone();
+                    let server = self.server.clone();
+                    self.restart(&ctx, server);
+                }
+                if apply_prompt {
+                    self.prompt = self.prompt_input.trim().to_string();
+                    save_prompt(&self.prompt);
                     let ctx = ui.ctx().clone();
                     let server = self.server.clone();
                     self.restart(&ctx, server);

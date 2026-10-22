@@ -26,7 +26,9 @@ pub fn serve(connection: TcpStream, transcribers: &Transcribers) -> Result<(), B
     let peer = connection.peer_addr()?;
     let mut reader = connection.try_clone()?;
     let mut writer = connection;
-    let (sample_rate, model) = protocol::read_hello(&mut reader)?;
+    let (sample_rate, model, client_prompt) = protocol::read_hello(&mut reader)?;
+    let transcriber = transcribers.get(model);
+    let prompt = (!client_prompt.trim().is_empty()).then_some(client_prompt.as_str());
 
     let (audio_tx, audio_rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -38,7 +40,7 @@ pub fn serve(connection: TcpStream, transcribers: &Transcribers) -> Result<(), B
     });
 
     let source = AudioSource::from_channel(audio_rx, sample_rate, format!("Client {peer}"));
-    run_transcriber(transcribers.get(model), source, &std::sync::atomic::AtomicBool::new(false), |msg| {
+    run_transcriber(transcriber, source, &std::sync::atomic::AtomicBool::new(false), prompt, |msg| {
         let _ = protocol::write_msg(&mut writer, &msg);
     })
 }

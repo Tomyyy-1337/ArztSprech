@@ -19,19 +19,34 @@ impl Model {
 
 const MAX_AUDIO_SAMPLES: usize = 16_000 * 10;
 const MAX_TEXT_BYTES: usize = 1 << 20;
+pub const MAX_PROMPT_BYTES: usize = 4 * 1024;
 
-pub fn write_hello(w: &mut impl Write, sample_rate: u32, model: Model) -> io::Result<()> {
+pub fn write_hello(w: &mut impl Write, sample_rate: u32, model: Model, prompt: &str) -> io::Result<()> {
+    let prompt = prompt.as_bytes();
+    if prompt.len() > MAX_PROMPT_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Prompt zu lang"));
+    }
     w.write_all(&sample_rate.to_le_bytes())?;
-    w.write_all(&[model_to_byte(model)])
+    w.write_all(&[model_to_byte(model)])?;
+    w.write_all(&(prompt.len() as u32).to_le_bytes())?;
+    w.write_all(prompt)
 }
 
-pub fn read_hello(r: &mut impl Read) -> io::Result<(u32, Model)> {
+pub fn read_hello(r: &mut impl Read) -> io::Result<(u32, Model, String)> {
     let sample_rate = read_u32(r)?;
     let mut byte = [0u8; 1];
     r.read_exact(&mut byte)?;
     let model = model_from_byte(byte[0])
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Unbekanntes Modell"))?;
-    Ok((sample_rate, model))
+    let prompt_len = read_u32(r)? as usize;
+    if prompt_len > MAX_PROMPT_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Prompt zu lang"));
+    }
+    let mut prompt = vec![0u8; prompt_len];
+    r.read_exact(&mut prompt)?;
+    let prompt = String::from_utf8(prompt)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    Ok((sample_rate, model, prompt))
 }
 
 fn model_to_byte(model: Model) -> u8 {
