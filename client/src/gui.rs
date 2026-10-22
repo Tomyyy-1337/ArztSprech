@@ -318,7 +318,7 @@ impl App {
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
-            iced::time::every(Duration::from_millis(10)).map(|_| Message::Tick),
+            iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick),
             window::resize_events().map(|(_, size)| Message::WindowResized(size)),
         ])
     }
@@ -408,7 +408,7 @@ impl App {
                 Msg::Final(text) => {
                     self.partial.clear();
                     if self.live {
-                        let final_text = if text.is_empty() { String::new() } else { format!("{text} ") };
+                        let final_text = if text.is_empty() || text.ends_with('\n') { text.clone() } else { format!("{text} ") };
                         self.replace_live_partial(&final_text);
                         self.live_partial.clear();
                     }
@@ -446,8 +446,17 @@ impl App {
             }
         }
         if let Some(enigo) = self.enigo.as_mut() {
-            if let Err(err) = enigo.text(text) {
-                self.status = format!("Automatisch Einfügen fehlgeschlagen: {err}");
+            for (i, line) in text.split('\n').enumerate() {
+                if i > 0 {
+                    if let Err(err) = enigo.key(enigo::Key::Return, enigo::Direction::Click) {
+                        self.status = format!("Automatisch Einfügen fehlgeschlagen: {err}");
+                    }
+                }
+                if !line.is_empty() {
+                    if let Err(err) = enigo.text(line) {
+                        self.status = format!("Automatisch Einfügen fehlgeschlagen: {err}");
+                    }
+                }
             }
         }
     }
