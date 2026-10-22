@@ -19,10 +19,10 @@ impl Model {
     }
 }
 
-// Pausenerkennung: 30-ms-Frames, ein Satz endet nach 0,75 s Stille oder spätestens nach 120 s.
+// Pausenerkennung: 30-ms-Frames, ein Satz endet nach etwa 0,5 s Stille oder spätestens nach 120 s.
 const FRAME_LEN: usize = (WHISPER_SAMPLE_RATE as usize) * 30 / 1000;
 const PRE_ROLL_FRAMES: usize = 15;
-const END_SILENCE_FRAMES: usize = 25;
+const END_SILENCE_FRAMES: usize = 17;
 const MAX_UTTERANCE_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 120;
 const MIN_SPEECH_FRAMES: usize = 8;
 const MIN_SPEECH_RMS: f32 = 0.004;
