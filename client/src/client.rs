@@ -4,17 +4,22 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use arztsprech_core::audio;
-use arztsprech_core::protocol::{self, Msg};
+use arztsprech_core::protocol::{self, Model, Msg};
 
 /// Sendet Mikrofon-Audio an den Server und leitet dessen Nachrichten an `send` weiter.
 /// Beendet die Verbindung, sobald `stop` gesetzt wird.
-pub fn stream_microphone<F>(server: &str, stop: Arc<AtomicBool>, send: F) -> Result<(), Box<dyn Error>>
+pub fn stream_microphone<F>(
+    server: &str,
+    model: Model,
+    stop: Arc<AtomicBool>,
+    send: F,
+) -> Result<(), Box<dyn Error>>
 where
     F: Fn(Msg) + Clone + Send + 'static,
 {
     let source = audio::open_microphone()?;
     let mut writer = TcpStream::connect(server)?;
-    protocol::write_hello(&mut writer, source.sample_rate)?;
+    protocol::write_hello(&mut writer, source.sample_rate, model)?;
 
     let mut reader = writer.try_clone()?;
     let reply_send = send.clone();

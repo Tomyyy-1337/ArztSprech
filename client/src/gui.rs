@@ -5,13 +5,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use eframe::egui;
 use enigo::{Enigo, Keyboard, Settings};
 
-use arztsprech_core::protocol::Msg;
+use arztsprech_core::protocol::{Model, Msg};
 #[cfg(feature = "remote")]
 use crate::client;
 #[cfg(not(feature = "remote"))]
 use arztsprech_core::audio;
 #[cfg(not(feature = "remote"))]
-use arztsprech_core::transcription::{DEFAULT_MODEL, Transcriber, run_transcriber};
+use arztsprech_core::transcription::{Transcriber, run_transcriber};
 #[cfg(not(feature = "remote"))]
 use std::error::Error;
 
@@ -29,8 +29,9 @@ pub fn run() -> eframe::Result {
         Box::new(|cc| {
             let (tx, rx) = mpsc::channel();
             let server = default_server();
+            let model = default_model();
             let stop = Arc::new(AtomicBool::new(false));
-            spawn_backend(&server, stop.clone(), make_send(tx.clone(), cc.egui_ctx.clone()));
+            let backend = spawn_backend(&server, model, stop.clone(), make_send(tx.clone(), cc.egui_ctx.clone()));
             apply_style(&cc.egui_ctx);
             Ok(Box::new(App {
                 rx,
@@ -43,8 +44,10 @@ pub fn run() -> eframe::Result {
                 overflow: false,
                 server: server.clone(),
                 server_input: server,
+                model,
                 stop,
                 show_settings: false,
+                backend: Some(backend),
             }))
         }),
     )
@@ -60,24 +63,57 @@ fn default_server() -> String {
         .unwrap_or_else(|| DEFAULT_SERVER.to_string())
 }
 
-/// Speicherort: `%APPDATA%\arztsprech\server.txt`.
-fn config_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("APPDATA").map(|dir| std::path::PathBuf::from(dir).join("arztsprech").join("server.txt"))
+/// Speicherort: `%APPDATA%\arztsprech\<file>`.
+fn config_path(file: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA").map(|dir| std::path::PathBuf::from(dir).join("arztsprech").join(file))
 }
 
 #[cfg(feature = "remote")]
 fn load_server() -> Option<String> {
-    let server = std::fs::read_to_string(config_path()?).ok()?;
+    let server = std::fs::read_to_string(config_path("server.txt")?).ok()?;
     let server = server.trim().to_string();
     (!server.is_empty()).then_some(server)
 }
 
 fn save_server(server: &str) {
-    if let Some(path) = config_path() {
+    write_config("server.txt", server);
+}
+
+fn default_model() -> Model {
+    config_path("model.txt")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|key| model_from_key(key.trim()))
+        .unwrap_or(Model::Turbo)
+}
+
+fn save_model(model: Model) {
+    write_config("model.txt", model_key(model));
+}
+
+fn write_config(file: &str, content: &str) {
+    if let Some(path) = config_path(file) {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(path, server);
+        let _ = std::fs::write(path, content);
+    }
+}
+
+fn model_key(model: Model) -> &'static str {
+    match model {
+        Model::Turbo => "turbo",
+        Model::LargeV3 => "large-v3",
+    }
+}
+
+fn model_from_key(key: &str) -> Option<Model> {
+    Model::ALL.into_iter().find(|&model| model_key(model) == key)
+}
+
+fn model_label(model: Model) -> &'static str {
+    match model {
+        Model::Turbo => "large-v3-turbo (schnell)",
+        Model::LargeV3 => "large-v3 (genauer)",
     }
 }
 
@@ -94,32 +130,59 @@ fn make_send(tx: Sender<Msg>, ctx: egui::Context) -> impl Fn(Msg) + Clone + Send
 }
 
 #[cfg(feature = "remote")]
-fn spawn_backend(server: &str, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) {
+fn spawn_backend(server: &str, model: Model, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
     let server = server.to_string();
     std::thread::spawn(move || {
         let error_send = send.clone();
-        if let Err(err) = client::stream_microphone(&server, stop, send) {
+        if let Err(err) = client::stream_microphone(&server, model, stop, send) {
             error_send(Msg::Status(format!("Fehler: {err}")));
         }
-    });
+    })
 }
 
 #[cfg(not(feature = "remote"))]
-fn spawn_backend(_server: &str, _stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) {
+fn spawn_backend(_server: &str, model: Model, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let error_send = send.clone();
-        if let Err(err) = run_standalone(send) {
+        if let Err(err) = run_standalone(model, stop, send) {
             error_send(Msg::Status(format!("Fehler: {err}")));
         }
-    });
+    })
 }
 
 #[cfg(not(feature = "remote"))]
-fn run_standalone(mut send: impl FnMut(Msg)) -> Result<(), Box<dyn Error>> {
-    let model = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    send(Msg::Status(format!("Lade Modell {model} ...")));
-    let transcriber = Transcriber::load(&model)?;
-    run_transcriber(&transcriber, audio::open_microphone()?, send)
+fn join_backend(handle: Option<std::thread::JoinHandle<()>>) {
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
+}
+
+#[cfg(feature = "remote")]
+fn join_backend(_handle: Option<std::thread::JoinHandle<()>>) {}
+
+/// Loads each model once and keeps it; reloading on every switch exhausted the GPU.
+#[cfg(not(feature = "remote"))]
+fn cached_transcriber(model: Model) -> Result<&'static Transcriber, Box<dyn Error>> {
+    static CACHE: [std::sync::OnceLock<Transcriber>; 2] = [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
+    let slot = &CACHE[model as usize];
+    if let Some(transcriber) = slot.get() {
+        return Ok(transcriber);
+    }
+    let transcriber = Transcriber::load(model.path())?;
+    Ok(slot.get_or_init(|| transcriber))
+}
+
+#[cfg(not(feature = "remote"))]
+fn run_standalone(model: Model, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Send + 'static) -> Result<(), Box<dyn Error>> {
+    let gate = stop.clone();
+    let send = move |msg: Msg| {
+        if !gate.load(Ordering::SeqCst) {
+            send(msg);
+        }
+    };
+    send(Msg::Status(format!("Lade Modell {} ...", model_label(model))));
+    let transcriber = cached_transcriber(model)?;
+    run_transcriber(transcriber, audio::open_microphone()?, &stop, send)
 }
 
 fn apply_style(ctx: &egui::Context) {
@@ -168,8 +231,10 @@ struct App {
     overflow: bool,
     server: String,
     server_input: String,
+    model: Model,
     stop: Arc<AtomicBool>,
     show_settings: bool,
+    backend: Option<std::thread::JoinHandle<()>>,
 }
 
 impl App {
@@ -179,12 +244,18 @@ impl App {
         if server.is_empty() {
             return;
         }
+        save_server(&server);
+        self.restart(ctx, server);
+    }
+
+    /// Beendet die aktuelle Verbindung und startet das Backend mit dem aktuellen Modell neu.
+    fn restart(&mut self, ctx: &egui::Context, server: String) {
         self.stop.store(true, Ordering::SeqCst);
+        join_backend(self.backend.take());
         self.stop = Arc::new(AtomicBool::new(false));
         self.server = server;
-        save_server(&self.server);
         self.status = format!("Verbinde mit {} ...", self.server);
-        spawn_backend(&self.server, self.stop.clone(), make_send(self.tx.clone(), ctx.clone()));
+        self.backend = Some(spawn_backend(&self.server, self.model, self.stop.clone(), make_send(self.tx.clone(), ctx.clone())));
     }
 
     /// Types text into the window that currently has keyboard focus.
@@ -269,29 +340,50 @@ impl eframe::App for App {
             if self.show_settings {
                 let remote = cfg!(feature = "remote");
                 let mut apply = false;
+                let mut model_changed = false;
+                let mut show_settings = self.show_settings;
                 egui::Window::new("Einstellungen")
-                    .open(&mut self.show_settings)
+                    .open(&mut show_settings)
                     .resizable(false)
+                    .default_width(320.0)
                     .show(ui.ctx(), |ui| {
-                        ui.label("Server (IP:Port)");
-                        ui.horizontal(|ui| {
-                            ui.add_enabled(
-                                remote,
-                                egui::TextEdit::singleline(&mut self.server_input).desired_width(180.0),
-                            );
-                            if ui.add_enabled(remote, egui::Button::new("Übernehmen")).clicked() {
-                                apply = true;
-                            }
-                        });
-                        if remote {
-                            ui.weak(format!("Aktuell: {}", self.server));
-                        } else {
-                            ui.weak("Nur mit Feature 'remote' verfügbar.");
-                        }
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    if remote {
+                                        ui.label("Server (IP:Port)");
+                                        ui.horizontal(|ui| {
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut self.server_input).desired_width(180.0),
+                                            );
+                                            if ui.button("Übernehmen").clicked() {
+                                                apply = true;
+                                            }
+                                        });
+                                        ui.weak(format!("Aktuell: {}", self.server));
+                                    }
+                                    ui.label("Modell");
+                                    let before = self.model;
+                                    egui::ComboBox::from_id_salt("model")
+                                        .selected_text(model_label(self.model))
+                                        .show_ui(ui, |ui| {
+                                            for model in Model::ALL {
+                                                ui.selectable_value(&mut self.model, model, model_label(model));
+                                            }
+                                        });
+                                    model_changed = self.model != before;
+                                });
                     });
+                self.show_settings = show_settings;
                 if apply {
                     let ctx = ui.ctx().clone();
                     self.reconnect(&ctx);
+                }
+                if model_changed {
+                    save_model(self.model);
+                    let ctx = ui.ctx().clone();
+                    let server = self.server.clone();
+                    self.restart(&ctx, server);
                 }
             }
             let overflow = self.overflow;

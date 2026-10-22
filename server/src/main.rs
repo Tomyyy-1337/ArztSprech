@@ -2,13 +2,17 @@ use std::error::Error;
 use std::net::TcpListener;
 use std::sync::Arc;
 
-use arztsprech_core::transcription::{DEFAULT_MODEL, Transcriber};
-use arztsprech_server::server;
+use arztsprech_core::protocol::Model;
+use arztsprech_core::transcription::Transcriber;
+use arztsprech_server::server::{self, Transcribers};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let listen = std::env::var("ARZTSPRECH_LISTEN").unwrap_or_else(|_| "0.0.0.0:7878".to_string());
-    let model = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    let transcriber = Arc::new(Transcriber::load(&model)?);
+    println!("Lade {}", Model::Turbo.path());
+    let turbo = Transcriber::load(Model::Turbo.path())?;
+    println!("Lade {}", Model::LargeV3.path());
+    let large_v3 = Transcriber::load(Model::LargeV3.path())?;
+    let transcriber = Arc::new(Transcribers { turbo, large_v3 });
 
     let listener = TcpListener::bind(&listen)?;
     println!("Server lauscht auf {listen}");

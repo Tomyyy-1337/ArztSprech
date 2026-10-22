@@ -6,15 +6,47 @@ pub enum Msg {
     Final(String),
 }
 
+/// Modelle, die Client und Server über das Netzwerk aushandeln.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Model {
+    Turbo,
+    LargeV3,
+}
+
+impl Model {
+    pub const ALL: [Model; 2] = [Model::Turbo, Model::LargeV3];
+}
+
 const MAX_AUDIO_SAMPLES: usize = 16_000 * 10;
 const MAX_TEXT_BYTES: usize = 1 << 20;
 
-pub fn write_hello(w: &mut impl Write, sample_rate: u32) -> io::Result<()> {
-    w.write_all(&sample_rate.to_le_bytes())
+pub fn write_hello(w: &mut impl Write, sample_rate: u32, model: Model) -> io::Result<()> {
+    w.write_all(&sample_rate.to_le_bytes())?;
+    w.write_all(&[model_to_byte(model)])
 }
 
-pub fn read_hello(r: &mut impl Read) -> io::Result<u32> {
-    read_u32(r)
+pub fn read_hello(r: &mut impl Read) -> io::Result<(u32, Model)> {
+    let sample_rate = read_u32(r)?;
+    let mut byte = [0u8; 1];
+    r.read_exact(&mut byte)?;
+    let model = model_from_byte(byte[0])
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Unbekanntes Modell"))?;
+    Ok((sample_rate, model))
+}
+
+fn model_to_byte(model: Model) -> u8 {
+    match model {
+        Model::Turbo => 0,
+        Model::LargeV3 => 1,
+    }
+}
+
+fn model_from_byte(byte: u8) -> Option<Model> {
+    match byte {
+        0 => Some(Model::Turbo),
+        1 => Some(Model::LargeV3),
+        _ => None,
+    }
 }
 
 pub fn write_audio(w: &mut impl Write, samples: &[f32]) -> io::Result<()> {

@@ -1,11 +1,23 @@
 use std::collections::VecDeque;
 use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
 use crate::audio::AudioSource;
-use crate::protocol::Msg;
+use crate::protocol::{Model, Msg};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
 pub const DEFAULT_MODEL: &str = "models/ggml-large-v3-turbo.bin";
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
+
+impl Model {
+    pub fn path(self) -> &'static str {
+        match self {
+            Model::Turbo => "models/ggml-large-v3-turbo.bin",
+            Model::LargeV3 => "models/ggml-large-v3.bin",
+        }
+    }
+}
 
 // Pausenerkennung: 30-ms-Frames, ein Satz endet nach 0,5 s Stille oder spätestens nach 120 s.
 const FRAME_LEN: usize = (WHISPER_SAMPLE_RATE as usize) * 30 / 1000;
@@ -41,10 +53,11 @@ impl Transcriber {
     }
 }
 
-/// Transkribiert Audio aus `source`, bis dessen Kanal geschlossen wird.
+/// Transkribiert Audio aus `source`, bis dessen Kanal geschlossen oder `stop` gesetzt wird.
 pub fn run_transcriber(
     transcriber: &Transcriber,
     source: AudioSource,
+    stop: &AtomicBool,
     mut send: impl FnMut(Msg),
 ) -> Result<(), Box<dyn Error>> {
     let prompt = transcriber.prompt.as_deref();
@@ -57,7 +70,12 @@ pub fn run_transcriber(
     let mut pending: Vec<f32> = Vec::new();
 
     // Der Stream liefert Audio im Hintergrund; hier wird es in Frames zerlegt und transkribiert.
-    while let Ok(chunk) = source.rx.recv() {
+    while !stop.load(Ordering::SeqCst) {
+        let chunk = match source.rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(chunk) => chunk,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         pending.extend(resampler.process(&chunk));
         let mut frames = pending.chunks_exact(FRAME_LEN);
         for frame in frames.by_ref() {
