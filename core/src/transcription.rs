@@ -29,7 +29,7 @@ const MIN_SPEECH_RMS: f32 = 0.004;
 // Während des Sprechens wird das offene Fenster in diesem Abstand neu transkribiert.
 const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
 // Dieser Abstand zum aktuellen Audio bleibt korrigierbar und wird nicht final gesendet.
-const COMMIT_TAIL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize / 2;
+const COMMIT_TAIL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
 // Ab dieser Fensterlänge wird an bestätigten Wörtern abgeschnitten.
 const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 20;
 
