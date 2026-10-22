@@ -42,7 +42,6 @@ pub fn run() -> eframe::Result {
                 status: String::new(),
                 live: false,
                 enigo: None,
-                overflow: false,
                 server: server.clone(),
                 server_input: server,
                 model,
@@ -245,7 +244,6 @@ struct App {
     status: String,
     live: bool,
     enigo: Option<Enigo>,
-    overflow: bool,
     server: String,
     server_input: String,
     model: Model,
@@ -423,7 +421,6 @@ impl eframe::App for App {
                     self.restart(&ctx, server);
                 }
             }
-            let overflow = self.overflow;
             let font = egui::TextStyle::Body.resolve(ui.style());
             let mut job = egui::text::LayoutJob::default();
             job.append(
@@ -452,15 +449,10 @@ impl eframe::App for App {
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     ui.add(egui::Label::new(job).wrap());
-                    if overflow {
-                        let line = ui.text_style_height(&egui::TextStyle::Body);
-                        ui.add_space(line + ui.spacing().item_spacing.y);
-                    }
                     if text_changed {
                         ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
                     }
                 });
-            self.overflow = out.content_size.y > out.inner_rect.height();
         });
     }
 }

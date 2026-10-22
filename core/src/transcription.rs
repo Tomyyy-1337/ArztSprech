@@ -19,19 +19,19 @@ impl Model {
     }
 }
 
-// Pausenerkennung: 30-ms-Frames, ein Satz endet nach 1 s Stille oder spätestens nach 120 s.
+// Pausenerkennung: 30-ms-Frames, ein Satz endet nach 0,75 s Stille oder spätestens nach 120 s.
 const FRAME_LEN: usize = (WHISPER_SAMPLE_RATE as usize) * 30 / 1000;
 const PRE_ROLL_FRAMES: usize = 15;
-const END_SILENCE_FRAMES: usize = 34;
+const END_SILENCE_FRAMES: usize = 25;
 const MAX_UTTERANCE_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 120;
 const MIN_SPEECH_FRAMES: usize = 8;
 const MIN_SPEECH_RMS: f32 = 0.004;
 // Während des Sprechens wird das offene Fenster in diesem Abstand neu transkribiert.
-const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
+const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 2;
 // Dieser Abstand zum aktuellen Audio bleibt korrigierbar und wird nicht final gesendet.
 const COMMIT_TAIL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
 // Ab dieser Fensterlänge wird an bestätigten Wörtern abgeschnitten.
-const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 20;
+const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 10;
 
 /// Wort mit Endposition (in Samples relativ zum Fenster) des Whisper-Segments.
 type Word = (String, usize);
