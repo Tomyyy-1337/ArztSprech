@@ -18,10 +18,27 @@ impl AudioSource {
     }
 }
 
-pub fn open_microphone() -> Result<AudioSource, Box<dyn Error>> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("Kein Mikrofon gefunden")?;
+pub fn input_device_names() -> Vec<String> {
+    cpal::default_host()
+        .input_devices()
+        .map(|devices| {
+            devices
+                .filter_map(|device| device.description().ok().map(|desc| desc.name().to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Opens the named input device, or the system default when `name` is `None`.
+pub fn open_microphone(name: Option<&str>) -> Result<AudioSource, Box<dyn Error>> {
+    let host = cpal::default_host();
+    let device = match name {
+        Some(name) => host
+            .input_devices()?
+            .find(|device| device.description().is_ok_and(|desc| desc.name() == name))
+            .ok_or_else(|| format!("Mikrofon nicht gefunden: {name}"))?,
+        None => host.default_input_device().ok_or("Kein Mikrofon gefunden")?,
+    };
     let supported = device.default_input_config()?;
     let config = supported.config();
 

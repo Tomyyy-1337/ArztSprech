@@ -12,13 +12,14 @@ pub fn stream_microphone<F>(
     server: &str,
     model: Model,
     prompt: &str,
+    mic: Option<String>,
     stop: Arc<AtomicBool>,
     send: F,
 ) -> Result<(), Box<dyn Error>>
 where
     F: Fn(Msg) + Clone + Send + 'static,
 {
-    let source = audio::open_microphone()?;
+    let source = audio::open_microphone(mic.as_deref())?;
     let mut writer = TcpStream::connect(server)?;
     protocol::write_hello(&mut writer, source.sample_rate, model, prompt)?;
 
