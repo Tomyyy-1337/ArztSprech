@@ -162,6 +162,12 @@ fn spawn_backend(server: &str, model: Model, prompt: &str, mic: Option<String>, 
     let server = server.to_string();
     let prompt = prompt.to_string();
     std::thread::spawn(move || {
+        let gate = stop.clone();
+        let send = move |msg: Msg| {
+            if !gate.load(Ordering::SeqCst) {
+                send(msg);
+            }
+        };
         let error_send = send.clone();
         if let Err(err) = client::stream_microphone(&server, model, &prompt, mic, stop, send) {
             error_send(Msg::Status(format!("Fehler: {err}")));
