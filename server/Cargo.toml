@@ -7,6 +7,5 @@ edition = "2024"
 arztsprech-core = { path = "../core", features = ["transcriber"] }
 
 [features]
-default = ["cuda"]
 cuda = ["arztsprech-core/cuda"]
 vulkan = ["arztsprech-core/vulkan"]
