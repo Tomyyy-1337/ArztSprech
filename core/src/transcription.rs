@@ -48,6 +48,7 @@ const ABBREVIATIONS: &[&str] = &[
 const SS_TO_ESZETT: &[(&str, &str)] = &[
     ("strasse", "straße"),
     ("strassen", "straßen"),
+    ("gros", "groß"),
     ("gross", "groß"),
     ("grosse", "große"),
     ("grossen", "großen"),
