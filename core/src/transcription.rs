@@ -96,7 +96,7 @@ pub fn run_transcriber(
             match segmenter.push_frame(frame) {
                 Some(utterance) => {
                     let words = transcribe(&mut state, &utterance[stream.offset..], prompt)?;
-                    send(Msg::Final(join_words(&stream.remaining(&words))));
+                    send(Msg::Final(join_words(&stream.unsent(&words))));
                     stream = Stream::default();
                 }
                 // Verworfenes Geräusch: der offene Rest wird zurückgenommen.
@@ -131,6 +131,8 @@ struct Stream {
     offset: usize,
     /// Anzahl der Wörter im Fenster, die bereits als final gesendet wurden.
     committed: usize,
+    sent: Vec<String>,
+    cap_next: bool,
     /// Hypothese des letzten Durchlaufs.
     prev: Vec<Word>,
     last_pass_len: usize,
@@ -148,8 +150,9 @@ impl Stream {
         if window_len > MAX_WINDOW_SAMPLES {
             stable = stable.max(words[..agreed].partition_point(|(_, end)| *end <= commit_before));
         }
-        let newly = if stable > self.committed {
-            let texts = words[self.committed..stable].iter().map(|w| w.0.clone()).collect();
+        let newly: Vec<String> = if stable > self.committed {
+            let texts: Vec<String> = words[self.committed..stable].iter().map(|w| w.0.clone()).collect();
+            self.sent.extend(texts.iter().cloned());
             self.committed = stable;
             texts
         } else {
@@ -163,6 +166,7 @@ impl Stream {
             && (stable == self.prev.len() || self.prev[stable].1 > self.prev[stable - 1].1);
         if cut_possible && (window_len > MAX_WINDOW_SAMPLES || ends_sentence(&self.prev[stable - 1].0)) {
             let cut = self.prev[stable - 1].1;
+            let after_absatz = word_key(&self.prev[stable - 1].0) == "absatz";
             self.offset += cut;
             self.prev = self
                 .prev
@@ -171,15 +175,43 @@ impl Stream {
                 .map(|(text, end)| (text, end.saturating_sub(cut)))
                 .collect();
             self.committed = 0;
+            self.sent.clear();
+            self.cap_next = after_absatz;
+            if let Some(first) = self.prev.first_mut().filter(|_| after_absatz) {
+                first.0 = capitalize_first(&first.0);
+            }
         }
 
         let tail = self.remaining(&self.prev);
         (newly, tail)
     }
 
-    /// Wörter einer abschließenden Transkription, die noch nicht gesendet wurden.
+    /// Wörter ab dem Fensterende der letzten Hypothese.
     fn remaining(&self, words: &[Word]) -> Vec<String> {
         words.get(self.committed..).unwrap_or_default().iter().map(|w| w.0.clone()).collect()
+    }
+
+    /// Wörter einer abschließenden Transkription, die noch nicht gesendet wurden.
+    fn unsent(&self, words: &[Word]) -> Vec<String> {
+        let n = self.sent.len();
+        let skip = match self.sent.last() {
+            None => 0,
+            Some(last) => (0..=words.len().saturating_sub(n))
+                .find(|&q| {
+                    q + n <= words.len() && (0..n).all(|k| word_key(&words[q + k].0) == word_key(&self.sent[k]))
+                })
+                .map_or_else(
+                    || words.iter().rposition(|w| word_key(&w.0) == word_key(last)).map_or(0, |i| i + 1),
+                    |q| q + n,
+                ),
+        };
+        let mut texts: Vec<String> = words[skip..].iter().map(|w| w.0.clone()).collect();
+        if skip == 0 && self.cap_next {
+            if let Some(first) = texts.first_mut() {
+                *first = capitalize_first(first);
+            }
+        }
+        texts
     }
 }
 
@@ -348,8 +380,77 @@ fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> 
         words.extend(text.split_whitespace().map(|word| (word.to_string(), end)));
     }
     let mut words = collapse_repeats(words);
+    fix_eszett(&mut words);
     apply_paragraphs(&mut words);
     Ok(words)
+}
+
+// Falsch geschriebene "ss"-Wörter (Kleinschreibung) und ihre korrekte Form mit "ß".
+const SS_TO_ESZETT: &[(&str, &str)] = &[
+    ("strasse", "straße"),
+    ("strassen", "straßen"),
+    ("gross", "groß"),
+    ("grosse", "große"),
+    ("grossen", "großen"),
+    ("grosser", "großer"),
+    ("grosses", "großes"),
+    ("heiss", "heiß"),
+    ("heisse", "heiße"),
+    ("heissen", "heißen"),
+    ("heisst", "heißt"),
+    ("weiss", "weiß"),
+    ("weisse", "weiße"),
+    ("weissen", "weißen"),
+    ("weisses", "weißes"),
+    ("fuss", "fuß"),
+    ("füsse", "füße"),
+    ("füssen", "füßen"),
+    ("gruss", "gruß"),
+    ("grüsse", "grüße"),
+    ("grüssen", "grüßen"),
+    ("spass", "spaß"),
+    ("süss", "süß"),
+    ("süsse", "süße"),
+    ("süssen", "süßen"),
+    ("ausser", "außer"),
+    ("ausserdem", "außerdem"),
+    ("ausserhalb", "außerhalb"),
+    ("aussen", "außen"),
+    ("schliessen", "schließen"),
+    ("schliesst", "schließt"),
+    ("schliesslich", "schließlich"),
+    ("schiessen", "schießen"),
+    ("beissen", "beißen"),
+    ("reissen", "reißen"),
+    ("stoss", "stoß"),
+    ("stossen", "stoßen"),
+    ("massnahme", "maßnahme"),
+    ("massnahmen", "maßnahmen"),
+];
+
+/// Ersetzt bekannte "ss"-Schreibweisen durch "ß"; prüft jeden Bindestrich-Teil einzeln.
+fn fix_eszett(words: &mut [Word]) {
+    for (text, _) in words.iter_mut() {
+        *text = text.split('-').map(fix_eszett_part).collect::<Vec<_>>().join("-");
+    }
+}
+
+fn fix_eszett_part(part: &str) -> String {
+    let key = word_key(part);
+    let Some((_, right)) = SS_TO_ESZETT.iter().find(|(wrong, _)| *wrong == key) else {
+        return part.to_string();
+    };
+    let start = part.find(|c: char| c.is_alphanumeric()).unwrap_or(0);
+    let end = part
+        .rfind(|c: char| c.is_alphanumeric())
+        .map_or(part.len(), |i| i + part[i..].chars().next().map_or(0, char::len_utf8));
+    let core = &part[start..end];
+    let replacement = if core.chars().next().is_some_and(char::is_uppercase) {
+        capitalize_first(right)
+    } else {
+        right.to_string()
+    };
+    format!("{}{}{}", &part[..start], replacement, &part[end..])
 }
 
 /// Entfernt Wiederholungsschleifen: eine Wortfolge bleibt höchstens zweimal in Folge stehen.
