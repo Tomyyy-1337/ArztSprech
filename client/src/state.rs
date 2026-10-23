@@ -318,7 +318,7 @@ impl App {
                 if self.show_settings {
                     self.mic_options = audio::input_device_names();
                 }
-                let size = if self.show_settings { Size::new(700.0, 660.0) } else { self.window_size };
+                let size = if self.show_settings { Size::new(700.0, 700.0) } else { self.window_size };
                 return window::latest().and_then(move |id| window::resize(id, size));
             }
             Message::WindowResized(size) => {

@@ -32,6 +32,8 @@ const TRAIL_PAD_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 3 / 10;
 const NO_SPEECH_MAX: f32 = 0.6;
 // Längste Wortfolge, die als Wiederholungsschleife erkannt wird.
 const MAX_LOOP_WORDS: usize = 8;
+// Anzahl der zuletzt gesendeten Wörter, mit denen die Endtranskription abgeglichen wird.
+const UNSENT_ANCHOR_WORDS: usize = 4;
 // Während des Sprechens wird das offene Fenster in diesem Abstand neu transkribiert.
 const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 2;
 // Dieser Abstand zum aktuellen Audio bleibt korrigierbar und wird nicht final gesendet.
@@ -143,9 +145,8 @@ impl Stream {
     fn pass(&mut self, words: Vec<Word>, window_len: usize) -> (Vec<String>, Vec<String>) {
         let agreed = self.prev.iter().zip(&words).take_while(|(a, b)| word_key(&a.0) == word_key(&b.0)).count();
         let commit_before = window_len.saturating_sub(COMMIT_TAIL_SAMPLES);
-        // "Absatz" wird sofort bestätigt, sonst kann Whisper es im nächsten Durchlauf wieder verwerfen.
-        let absatz_end = words.iter().rposition(|w| word_key(&w.0) == "absatz").map_or(0, |i| i + 1);
-        let mut stable = sentence_commit_point(&words[..agreed], &words).max(absatz_end);
+        let agreed_absatz_end = words[..agreed].iter().rposition(|w| word_key(&w.0) == "absatz").map_or(0, |i| i + 1);
+        let mut stable = sentence_commit_point(&words[..agreed], &words).max(agreed_absatz_end);
         // Ohne Satzende hilft nur die Zeit, sonst wächst das Fenster unbegrenzt.
         if window_len > MAX_WINDOW_SAMPLES {
             stable = stable.max(words[..agreed].partition_point(|(_, end)| *end <= commit_before));
@@ -194,17 +195,16 @@ impl Stream {
     /// Wörter einer abschließenden Transkription, die noch nicht gesendet wurden.
     fn unsent(&self, words: &[Word]) -> Vec<String> {
         let n = self.sent.len();
-        let skip = match self.sent.last() {
-            None => 0,
-            Some(last) => (0..=words.len().saturating_sub(n))
-                .find(|&q| {
-                    q + n <= words.len() && (0..n).all(|k| word_key(&words[q + k].0) == word_key(&self.sent[k]))
-                })
-                .map_or_else(
-                    || words.iter().rposition(|w| word_key(&w.0) == word_key(last)).map_or(0, |i| i + 1),
-                    |q| q + n,
-                ),
-        };
+        let skip = (1..=n.min(UNSENT_ANCHOR_WORDS))
+            .rev()
+            .find_map(|k| {
+                let anchor = &self.sent[n - k..];
+                (0..=words.len().checked_sub(k)?)
+                    .filter(|&p| anchor.iter().enumerate().all(|(j, s)| word_key(&words[p + j].0) == word_key(s)))
+                    .min_by_key(|&p| (p + k).abs_diff(n))
+                    .map(|p| p + k)
+            })
+            .unwrap_or(0);
         let mut texts: Vec<String> = words[skip..].iter().map(|w| w.0.clone()).collect();
         if skip == 0 && self.cap_next {
             if let Some(first) = texts.first_mut() {

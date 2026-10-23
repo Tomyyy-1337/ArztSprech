@@ -192,6 +192,7 @@ impl App {
         }
         container(
             scrollable(rich_text(spans).width(Fill))
+                .direction(scrollable::Direction::Vertical(scrollable::Scrollbar::new().spacing(8)))
                 .anchor_bottom()
                 .width(Fill)
                 .height(Length::Fill),
