@@ -14,7 +14,7 @@ fn main() -> iced::Result {
         .theme(App::theme)
         .subscription(App::subscription)
         .window(window::Settings {
-            size: Size::new(500.0, 200.0),
+            size: Size::new(500.0, 320.0),
             min_size: Some(Size::new(420.0, 180.0)),
             level: window::Level::AlwaysOnTop,
             ..Default::default()

@@ -5,19 +5,18 @@
 Standalone Usage
 
 ```bash
-cargo run --release -p arztsprech-client --features standalone,cuda
+cargo run --release -p arztsprech-client --features standalone
 ```
 
 Server Only
 
 ```bash
-cargo run --release -p arztsprech-server --features cuda
+cargo run --release -p arztsprech-server 
 ```
 
 Client Only
  
 ```bash
-$env:ARZTSPRECH_SERVER="127.0.0.1:7878"
 cargo run --release -p arztsprech-client --features remote
 ```
 
@@ -25,6 +24,6 @@ cargo run --release -p arztsprech-client --features remote
 ## Trigger GitHub action
 
 ```bash
-git tag v0.1.7
-git push origin v0.1.7
+git tag v0.1.8
+git push origin v0.1.8
 ```

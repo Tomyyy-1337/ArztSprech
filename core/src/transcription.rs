@@ -38,8 +38,8 @@ const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 2;
 const COMMIT_TAIL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
 // Ab dieser Fensterlänge wird an bestätigten Wörtern abgeschnitten.
 const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 10;
-// Bestätigte Wörter, die nach einem Satzende folgen müssen, bevor der Satz final wird.
-const SENTENCE_LOOKAHEAD_WORDS: usize = 2;
+// Wörter, die nach einem Satzende folgen müssen, bevor der Satz final wird.
+const SENTENCE_LOOKAHEAD_WORDS: usize = 3;
 // Abkürzungen mit Punkt (ohne Punkte und in Kleinbuchstaben), die kein Satzende markieren.
 const ABBREVIATIONS: &[&str] = &[
     "dr", "prof", "zb", "dh", "ua", "bzw", "bzgl", "ca", "nr", "hr", "fr", "bspw", "evtl", "ggf", "vgl",
@@ -141,10 +141,11 @@ impl Stream {
         let commit_before = window_len.saturating_sub(COMMIT_TAIL_SAMPLES);
         // "Absatz" wird sofort bestätigt, sonst kann Whisper es im nächsten Durchlauf wieder verwerfen.
         let absatz_end = words.iter().rposition(|w| word_key(&w.0) == "absatz").map_or(0, |i| i + 1);
-        let stable = words[..agreed]
-            .partition_point(|(_, end)| *end <= commit_before)
-            .max(sentence_commit_point(&words[..agreed]))
-            .max(absatz_end);
+        let mut stable = sentence_commit_point(&words[..agreed], &words).max(absatz_end);
+        // Ohne Satzende hilft nur die Zeit, sonst wächst das Fenster unbegrenzt.
+        if window_len > MAX_WINDOW_SAMPLES {
+            stable = stable.max(words[..agreed].partition_point(|(_, end)| *end <= commit_before));
+        }
         let newly = if stable > self.committed {
             let texts = words[self.committed..stable].iter().map(|w| w.0.clone()).collect();
             self.committed = stable;
@@ -452,15 +453,12 @@ fn ends_sentence(word: &str) -> bool {
     }
 }
 
-/// Länge des Präfixes bis zum letzten Satzende, dem genug bestätigte Wörter folgen oder das "Absatz" ist.
-fn sentence_commit_point(agreed: &[Word]) -> usize {
+/// Länge des Präfixes bis zum letzten bestätigten Satzende, dem in `words` genug Wörter folgen.
+fn sentence_commit_point(agreed: &[Word], words: &[Word]) -> usize {
     agreed
         .iter()
         .enumerate()
         .rev()
-        .find(|(i, (text, _))| {
-            ends_sentence(text)
-                && (word_key(text) == "absatz" || agreed.len() - (*i + 1) >= SENTENCE_LOOKAHEAD_WORDS)
-        })
+        .find(|(i, (text, _))| ends_sentence(text) && words.len() - (*i + 1) >= SENTENCE_LOOKAHEAD_WORDS)
         .map_or(0, |(i, _)| i + 1)
 }
