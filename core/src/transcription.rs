@@ -45,6 +45,47 @@ const ABBREVIATIONS: &[&str] = &[
     "dr", "prof", "zb", "dh", "ua", "bzw", "bzgl", "ca", "nr", "hr", "fr", "bspw", "evtl", "ggf", "vgl",
     "inkl", "geb", "std", "tel", "mio", "u", "v",
 ];
+const SS_TO_ESZETT: &[(&str, &str)] = &[
+    ("strasse", "straße"),
+    ("strassen", "straßen"),
+    ("gross", "groß"),
+    ("grosse", "große"),
+    ("grossen", "großen"),
+    ("grosser", "großer"),
+    ("grosses", "großes"),
+    ("heiss", "heiß"),
+    ("heisse", "heiße"),
+    ("heissen", "heißen"),
+    ("heisst", "heißt"),
+    ("weiss", "weiß"),
+    ("weisse", "weiße"),
+    ("weissen", "weißen"),
+    ("weisses", "weißes"),
+    ("fuss", "fuß"),
+    ("füsse", "füße"),
+    ("füssen", "füßen"),
+    ("gruss", "gruß"),
+    ("grüsse", "grüße"),
+    ("grüssen", "grüßen"),
+    ("spass", "spaß"),
+    ("süss", "süß"),
+    ("süsse", "süße"),
+    ("süssen", "süßen"),
+    ("ausser", "außer"),
+    ("ausserdem", "außerdem"),
+    ("ausserhalb", "außerhalb"),
+    ("aussen", "außen"),
+    ("schliessen", "schließen"),
+    ("schliesst", "schließt"),
+    ("schliesslich", "schließlich"),
+    ("schiessen", "schießen"),
+    ("beissen", "beißen"),
+    ("reissen", "reißen"),
+    ("stoss", "stoß"),
+    ("stossen", "stoßen"),
+    ("massnahme", "maßnahme"),
+    ("massnahmen", "maßnahmen"),
+];
 
 /// Wort mit Endposition (in Samples relativ zum Fenster) des Whisper-Segments.
 type Word = (String, usize);
@@ -345,8 +386,33 @@ fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> 
         words.extend(text.split_whitespace().map(|word| (word.to_string(), end)));
     }
     let mut words = collapse_repeats(words);
+    apply_eszett(&mut words);
     apply_paragraphs(&mut words);
     Ok(words)
+}
+
+/// Ersetzt "ss"-Schreibweisen aus `SS_TO_ESZETT` durch "ß"; Satzzeichen und Großschreibung bleiben erhalten.
+fn apply_eszett(words: &mut [Word]) {
+    for (text, _) in words.iter_mut() {
+        *text = text.split('-').map(eszett_part).collect::<Vec<_>>().join("-");
+    }
+}
+
+fn eszett_part(part: &str) -> String {
+    let key = word_key(part);
+    let Some((_, to)) = SS_TO_ESZETT.iter().find(|(from, _)| *from == key) else {
+        return part.to_string();
+    };
+    let start = part.find(|c: char| c.is_alphanumeric()).unwrap_or(0);
+    let end = part
+        .rfind(|c: char| c.is_alphanumeric())
+        .map_or(part.len(), |i| i + part[i..].chars().next().map_or(0, char::len_utf8));
+    let replacement = if part[start..end].starts_with(char::is_uppercase) {
+        capitalize_first(to)
+    } else {
+        to.to_string()
+    };
+    format!("{}{}{}", &part[..start], replacement, &part[end..])
 }
 
 /// Entfernt Wiederholungsschleifen: eine Wortfolge bleibt höchstens zweimal in Folge stehen.
