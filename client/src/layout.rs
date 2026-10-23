@@ -6,34 +6,56 @@ use arztsprech_core::protocol::Model;
 
 use super::state::{App, Message, SYSTEM_MIC, model_label};
 
-pub(super) fn app_theme() -> Theme {
-    Theme::custom(
-        "Arztsprech".to_string(),
-        Palette {
-            background: rgb(22, 23, 28),
-            text: rgb(220, 222, 228),
-            primary: rgb(88, 130, 255),
-            success: rgb(90, 200, 120),
-            warning: rgb(230, 180, 60),
-            danger: rgb(235, 70, 70),
-        },
-    )
+pub(super) fn app_theme(dark: bool) -> Theme {
+    let (name, palette) = if dark {
+        (
+            "Arztsprech Dunkel",
+            Palette {
+                background: rgb(22, 23, 28),
+                text: rgb(220, 222, 228),
+                primary: rgb(88, 130, 255),
+                success: rgb(90, 200, 120),
+                warning: rgb(230, 180, 60),
+                danger: rgb(235, 70, 70),
+            },
+        )
+    } else {
+        (
+            "Arztsprech Hell",
+            Palette {
+                background: rgb(250, 250, 252),
+                text: rgb(30, 32, 38),
+                primary: rgb(60, 110, 240),
+                success: rgb(40, 160, 90),
+                warning: rgb(200, 140, 20),
+                danger: rgb(210, 50, 50),
+            },
+        )
+    };
+    Theme::custom(name.to_string(), palette)
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb8(r, g, b)
 }
 
-fn surface_style(_: &Theme) -> container::Style {
+fn is_dark(theme: &Theme) -> bool {
+    let background = theme.palette().background;
+    (background.r + background.g + background.b) / 3.0 < 0.5
+}
+
+fn surface_style(theme: &Theme) -> container::Style {
+    let color = if is_dark(theme) { rgb(30, 32, 38) } else { rgb(232, 234, 240) };
     container::Style {
-        background: Some(Background::Color(rgb(30, 32, 38))),
+        background: Some(Background::Color(color)),
         ..Default::default()
     }
 }
 
-fn outline_style(_: &Theme) -> container::Style {
+fn outline_style(theme: &Theme) -> container::Style {
+    let color = if is_dark(theme) { rgb(88, 92, 104) } else { rgb(170, 174, 186) };
     container::Style {
-        border: Border { color: rgb(88, 92, 104), width: 1.0, radius: 6.0.into() },
+        border: Border { color, width: 1.0, radius: 6.0.into() },
         ..Default::default()
     }
 }
@@ -48,12 +70,22 @@ impl std::fmt::Display for ModelChoice {
     }
 }
 
+/// Wrapper so `pick_list` can display the design choice; `true` means dark.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ThemeChoice(bool);
+
+impl std::fmt::Display for ThemeChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", if self.0 { "Dunkel" } else { "Hell" })
+    }
+}
+
 impl App {
     pub fn view(&self) -> Element<'_, Message> {
         if self.show_settings {
             return self.settings_view();
         }
-        let status_color = rgb(120, 160, 255);
+        let status_color = if self.dark { rgb(120, 160, 255) } else { rgb(40, 90, 200) };
         let mut status_row = row![container(text(format!("Status: {}", self.status)).size(12).color(status_color)).width(Fill).max_height(32).clip(true)]
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center);
@@ -85,7 +117,34 @@ impl App {
         ]
         .align_y(iced::alignment::Vertical::Center);
 
-        let mut content = column![].spacing(8).width(Fill);
+        let models: Vec<ModelChoice> = Model::ALL.map(ModelChoice).to_vec();
+        let mut mic_options = vec![SYSTEM_MIC.to_string()];
+        mic_options.extend(self.mic_options.iter().cloned());
+        let mut content = column![]
+            .spacing(8)
+            .width(Fill)
+            .push(text("Design"))
+            .push(
+                pick_list(vec![ThemeChoice(true), ThemeChoice(false)], Some(ThemeChoice(self.dark)), |choice: ThemeChoice| {
+                    Message::ThemeSelected(choice.0)
+                })
+                .width(Fill),
+            )
+            .push(text("Mikrofon"))
+            .push(
+                pick_list(mic_options, Some(self.mic.clone().unwrap_or_else(|| SYSTEM_MIC.to_string())), Message::MicSelected)
+                    .width(Fill),
+            )
+            .push(text("Modell"))
+            .push(
+                pick_list(models, Some(ModelChoice(self.model)), |choice: ModelChoice| {
+                    Message::ModelSelected(choice.0)
+                })
+                .width(Fill),
+            )
+            .push(text("Systemprompt"))
+            .push(container(text_editor(&self.prompt_input).on_action(Message::PromptEdit).height(200)).style(outline_style))
+            .push(button("Systemprompt übernehmen").on_press(Message::ApplyPrompt));
         if cfg!(feature = "remote") {
             content = content
                 .push(text("Server (IP:Port)"))
@@ -101,25 +160,6 @@ impl App {
                 )
                 .push(text(format!("Aktuell: {}", self.server)).color(rgb(140, 144, 155)));
         }
-        let models: Vec<ModelChoice> = Model::ALL.map(ModelChoice).to_vec();
-        let mut mic_options = vec![SYSTEM_MIC.to_string()];
-        mic_options.extend(self.mic_options.iter().cloned());
-        content = content
-            .push(text("Modell"))
-            .push(
-                pick_list(models, Some(ModelChoice(self.model)), |choice: ModelChoice| {
-                    Message::ModelSelected(choice.0)
-                })
-                .width(Fill),
-            )
-            .push(text("Mikrofon"))
-            .push(
-                pick_list(mic_options, Some(self.mic.clone().unwrap_or_else(|| SYSTEM_MIC.to_string())), Message::MicSelected)
-                    .width(Fill),
-            )
-            .push(text("Systemprompt"))
-            .push(container(text_editor(&self.prompt_input).on_action(Message::PromptEdit).height(200)).style(outline_style))
-            .push(button("Systemprompt übernehmen").on_press(Message::ApplyPrompt));
 
         let page = column![header, scrollable(content).width(Fill).height(Fill)].spacing(12);
         container(page)
@@ -134,7 +174,8 @@ impl App {
         let mut spans = vec![span::<(), _>(self.text.clone())];
         if !self.partial.is_empty() {
             let sep = if self.text.is_empty() { "" } else { " " };
-            spans.push(span::<(), _>(format!("{sep}{}", self.partial)).color(rgb(120, 124, 135)));
+            let partial_color = if self.dark { rgb(120, 124, 135) } else { rgb(130, 134, 145) };
+            spans.push(span::<(), _>(format!("{sep}{}", self.partial)).color(partial_color));
         }
         container(
             scrollable(rich_text(spans).width(Fill))

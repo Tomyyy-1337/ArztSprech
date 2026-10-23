@@ -30,6 +30,7 @@ pub enum Message {
     Clear,
     ToggleLive(bool),
     ToggleSettings,
+    ThemeSelected(bool),
     WindowResized(Size),
     ServerInput(String),
     ApplyServer,
@@ -59,6 +60,7 @@ pub struct App {
     pub(super) window_size: Size,
     pub(super) backend: Option<std::thread::JoinHandle<()>>,
     pub(super) theme: Theme,
+    pub(super) dark: bool,
 }
 
 pub fn boot() -> App {
@@ -67,6 +69,7 @@ pub fn boot() -> App {
     let model = default_model();
     let prompt = load_prompt();
     let mic = load_mic();
+    let dark = load_dark();
     let stop = Arc::new(AtomicBool::new(false));
     let backend = spawn_backend(&server, model, &prompt, mic.clone(), stop.clone(), make_send(tx.clone()));
     App {
@@ -88,7 +91,8 @@ pub fn boot() -> App {
         show_settings: false,
         window_size: Size::new(500.0, 180.0),
         backend: Some(backend),
-        theme: app_theme(),
+        theme: app_theme(dark),
+        dark,
     }
 }
 
@@ -152,6 +156,17 @@ fn save_mic(mic: Option<&str>) {
     write_config("mic.txt", mic.unwrap_or(""));
 }
 
+fn load_dark() -> bool {
+    config_path("theme.txt")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|mode| mode.trim() != "light")
+        .unwrap_or(true)
+}
+
+fn save_dark(dark: bool) {
+    write_config("theme.txt", if dark { "dark" } else { "light" });
+}
+
 fn write_config(file: &str, content: &str) {
     if let Some(path) = config_path(file) {
         if let Some(dir) = path.parent() {
@@ -174,8 +189,8 @@ fn model_from_key(key: &str) -> Option<Model> {
 
 pub(super) fn model_label(model: Model) -> &'static str {
     match model {
-        Model::Turbo => "large-v3-turbo (schnell)",
-        Model::GermanTurbo => "german-turbo (deutsche Fachbegriffe)",
+        Model::Turbo => "large-v3-turbo",
+        Model::GermanTurbo => "large-v3-turbo-german",
     }
 }
 
@@ -282,12 +297,19 @@ impl App {
                 if self.show_settings {
                     self.mic_options = audio::input_device_names();
                 }
-                let size = if self.show_settings { Size::new(700.0, 600.0) } else { self.window_size };
+                let size = if self.show_settings { Size::new(700.0, 660.0) } else { self.window_size };
                 return window::latest().and_then(move |id| window::resize(id, size));
             }
             Message::WindowResized(size) => {
                 if !self.show_settings {
                     self.window_size = size;
+                }
+            }
+            Message::ThemeSelected(dark) => {
+                if dark != self.dark {
+                    self.dark = dark;
+                    self.theme = app_theme(dark);
+                    save_dark(dark);
                 }
             }
             Message::ServerInput(server) => self.server_input = server,
