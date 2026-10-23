@@ -29,6 +29,7 @@ pub enum Message {
     Copy,
     Clear,
     ToggleLive(bool),
+    LiveEditToggled(bool),
     ToggleSettings,
     ThemeSelected(bool),
     WindowResized(Size),
@@ -47,6 +48,8 @@ pub struct App {
     pub(super) partial: String,
     pub(super) status: String,
     pub(super) live: bool,
+    pub(super) live_edit: bool,
+    pub(super) typed_partial: String,
     pub(super) enigo: Option<Enigo>,
     pub(super) server: String,
     pub(super) server_input: String,
@@ -70,6 +73,7 @@ pub fn boot() -> App {
     let prompt = load_prompt();
     let mic = load_mic();
     let dark = load_dark();
+    let live_edit = load_live_edit();
     let stop = Arc::new(AtomicBool::new(false));
     let backend = spawn_backend(&server, model, &prompt, mic.clone(), stop.clone(), make_send(tx.clone()));
     App {
@@ -79,6 +83,8 @@ pub fn boot() -> App {
         partial: String::new(),
         status: String::new(),
         live: false,
+        live_edit,
+        typed_partial: String::new(),
         enigo: None,
         server: server.clone(),
         server_input: server,
@@ -165,6 +171,16 @@ fn load_dark() -> bool {
 
 fn save_dark(dark: bool) {
     write_config("theme.txt", if dark { "dark" } else { "light" });
+}
+
+fn load_live_edit() -> bool {
+    config_path("live_edit.txt")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|mode| mode.trim() == "on")
+}
+
+fn save_live_edit(on: bool) {
+    write_config("live_edit.txt", if on { "on" } else { "off" });
 }
 
 fn write_config(file: &str, content: &str) {
@@ -290,7 +306,12 @@ impl App {
                 if live {
                     self.text.clear();
                     self.partial.clear();
+                    self.typed_partial.clear();
                 }
+            }
+            Message::LiveEditToggled(on) => {
+                self.live_edit = on;
+                save_live_edit(on);
             }
             Message::ToggleSettings => {
                 self.show_settings = !self.show_settings;
@@ -352,9 +373,15 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Status(status) => self.status = status,
-                Msg::Partial(text) => self.partial = text,
+                Msg::Partial(text) => {
+                    if self.live && self.live_edit {
+                        self.update_typed_partial(&text);
+                    }
+                    self.partial = text;
+                }
                 Msg::Final(text) => {
                     self.partial.clear();
+                    self.erase_typed_partial();
                     if self.live && !text.is_empty() {
                         let final_text = if text.ends_with('\n') { text.clone() } else { format!("{text} ") };
                         self.type_live(&final_text);
@@ -380,17 +407,61 @@ impl App {
         self.backend = Some(spawn_backend(&self.server, self.model, &self.prompt, self.mic.clone(), self.stop.clone(), make_send(self.tx.clone())));
     }
 
-    /// Types text into the window that currently has keyboard focus.
-    fn type_live(&mut self, text: &str) {
-        if self.enigo.is_none() {
-            match Enigo::new(&Settings::default()) {
-                Ok(enigo) => self.enigo = Some(enigo),
-                Err(err) => {
-                    self.status = format!("Automatisch Einfügen nicht verfügbar: {err}");
-                    self.live = false;
-                    return;
+    fn ensure_enigo(&mut self) -> bool {
+        if self.enigo.is_some() {
+            return true;
+        }
+        match Enigo::new(&Settings::default()) {
+            Ok(enigo) => {
+                self.enigo = Some(enigo);
+                true
+            }
+            Err(err) => {
+                self.status = format!("Automatisch Einfügen nicht verfügbar: {err}");
+                self.live = false;
+                false
+            }
+        }
+    }
+
+    /// Ersetzt die getippte Vorschau im Zielfenster, ohne bereits passende Zeichen neu zu tippen.
+    fn update_typed_partial(&mut self, text: &str) {
+        if text == self.typed_partial {
+            return;
+        }
+        let old: Vec<char> = self.typed_partial.chars().collect();
+        let new: Vec<char> = text.chars().collect();
+        let common = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        let rest: String = new[common..].iter().collect();
+        self.press_backspace(old.len() - common);
+        self.type_live(&rest);
+        self.typed_partial = text.to_string();
+    }
+
+    fn erase_typed_partial(&mut self) {
+        let count = self.typed_partial.chars().count();
+        self.typed_partial.clear();
+        self.press_backspace(count);
+    }
+
+    fn press_backspace(&mut self, count: usize) {
+        if count == 0 || !self.ensure_enigo() {
+            return;
+        }
+        if let Some(enigo) = self.enigo.as_mut() {
+            for _ in 0..count {
+                if let Err(err) = enigo.key(enigo::Key::Backspace, enigo::Direction::Click) {
+                    self.status = format!("Automatisch Einfügen fehlgeschlagen: {err}");
+                    break;
                 }
             }
+        }
+    }
+
+    /// Types text into the window that currently has keyboard focus.
+    fn type_live(&mut self, text: &str) {
+        if !self.ensure_enigo() {
+            return;
         }
         if let Some(enigo) = self.enigo.as_mut() {
             for (i, line) in text.split('\n').enumerate() {

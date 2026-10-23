@@ -1,5 +1,5 @@
 use iced::theme::Palette;
-use iced::widget::{button, column, container, pick_list, row, rich_text, scrollable, span, text, text_editor, text_input};
+use iced::widget::{button, column, container, pick_list, row, rich_text, scrollable, span, text, text_editor, text_input, toggler};
 use iced::{Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
 use arztsprech_core::protocol::Model;
@@ -140,6 +140,19 @@ impl App {
                 pick_list(models, Some(ModelChoice(self.model)), |choice: ModelChoice| {
                     Message::ModelSelected(choice.0)
                 })
+                .width(Fill),
+            )
+            .push(text("Automatisch Einfügen geringe Verzögerung"))
+            .push(
+                container(
+                    toggler(self.live_edit)
+                        .label("Vorschau mit einfügen")
+                        .on_toggle(Message::LiveEditToggled)
+                        .size(22)
+                        .text_size(14)
+                        .spacing(4),
+                )
+                .padding([2, 10])
                 .width(Fill),
             )
             .push(text("Systemprompt"))
