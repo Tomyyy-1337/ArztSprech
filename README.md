@@ -5,13 +5,13 @@
 Standalone Usage
 
 ```bash
-cargo run --release -p arztsprech-client --features standalone
+cargo run --release -p arztsprech-client --features standalone,cuda
 ```
 
 Server Only
 
 ```bash
-cargo run --release -p arztsprech-server 
+cargo run --release -p arztsprech-server  --features cuda
 ```
 
 Client Only

@@ -13,7 +13,6 @@ iced = { version = "0.14", default-features = false, features = ["tiny-skia", "s
 enigo = "0.6.1"
 
 [features]
-default = ["cuda"]
 standalone = ["arztsprech-core/transcriber"]
 remote = []
 cuda = ["arztsprech-core/cuda"]
