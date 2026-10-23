@@ -39,7 +39,9 @@ const COMMIT_TAIL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
 // Ab dieser Fensterlänge wird an bestätigten Wörtern abgeschnitten.
 const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 10;
 // Wörter, die nach einem Satzende folgen müssen, bevor der Satz final wird.
-const SENTENCE_LOOKAHEAD_WORDS: usize = 3;
+const SENTENCE_LOOKAHEAD_WORDS: usize = 5;
+// Wörter, die nach einem Komma folgen müssen, bevor bis dahin final gesendet wird (ohne Audio abzuschneiden).
+const COMMA_LOOKAHEAD_WORDS: usize = 7;
 // Abkürzungen mit Punkt (ohne Punkte und in Kleinbuchstaben), die kein Satzende markieren.
 const ABBREVIATIONS: &[&str] = &[
     "dr", "prof", "zb", "dh", "ua", "bzw", "bzgl", "ca", "nr", "hr", "fr", "bspw", "evtl", "ggf", "vgl",
@@ -453,12 +455,20 @@ fn ends_sentence(word: &str) -> bool {
     }
 }
 
-/// Länge des Präfixes bis zum letzten bestätigten Satzende, dem in `words` genug Wörter folgen.
+/// Wahr, wenn das Wort mit einem Komma endet.
+fn ends_comma(word: &str) -> bool {
+    word.trim_end_matches(|c: char| matches!(c, '"' | '\'' | ')' | ']' | '»' | '“' | '”')).ends_with(',')
+}
+
+/// Länge des Präfixes bis zum letzten bestätigten Satzende bzw. Komma, dem in `words` genug Wörter folgen.
 fn sentence_commit_point(agreed: &[Word], words: &[Word]) -> usize {
     agreed
         .iter()
         .enumerate()
         .rev()
-        .find(|(i, (text, _))| ends_sentence(text) && words.len() - (*i + 1) >= SENTENCE_LOOKAHEAD_WORDS)
+        .find(|(i, (text, _))| {
+            let after = words.len() - (*i + 1);
+            (ends_sentence(text) && after >= SENTENCE_LOOKAHEAD_WORDS) || (ends_comma(text) && after >= COMMA_LOOKAHEAD_WORDS)
+        })
         .map_or(0, |(i, _)| i + 1)
 }
