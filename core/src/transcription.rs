@@ -32,18 +32,14 @@ const TRAIL_PAD_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 3 / 10;
 const NO_SPEECH_MAX: f32 = 0.6;
 // Längste Wortfolge, die als Wiederholungsschleife erkannt wird.
 const MAX_LOOP_WORDS: usize = 8;
-// Anzahl der zuletzt gesendeten Wörter, mit denen die Endtranskription abgeglichen wird.
-const UNSENT_ANCHOR_WORDS: usize = 4;
 // Während des Sprechens wird das offene Fenster in diesem Abstand neu transkribiert.
 const PASS_INTERVAL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 2;
 // Dieser Abstand zum aktuellen Audio bleibt korrigierbar und wird nicht final gesendet.
 const COMMIT_TAIL_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize;
 // Ab dieser Fensterlänge wird an bestätigten Wörtern abgeschnitten.
 const MAX_WINDOW_SAMPLES: usize = WHISPER_SAMPLE_RATE as usize * 10;
-// Wörter, die nach einem Satzende folgen müssen, bevor der Satz final wird.
-const SENTENCE_LOOKAHEAD_WORDS: usize = 5;
-// Wörter, die nach einem Komma folgen müssen, bevor bis dahin final gesendet wird (ohne Audio abzuschneiden).
-const COMMA_LOOKAHEAD_WORDS: usize = 7;
+// Bestätigte Wörter, die nach einem Satzende folgen müssen, bevor der Satz final wird.
+const SENTENCE_LOOKAHEAD_WORDS: usize = 2;
 // Abkürzungen mit Punkt (ohne Punkte und in Kleinbuchstaben), die kein Satzende markieren.
 const ABBREVIATIONS: &[&str] = &[
     "dr", "prof", "zb", "dh", "ua", "bzw", "bzgl", "ca", "nr", "hr", "fr", "bspw", "evtl", "ggf", "vgl",
@@ -98,7 +94,7 @@ pub fn run_transcriber(
             match segmenter.push_frame(frame) {
                 Some(utterance) => {
                     let words = transcribe(&mut state, &utterance[stream.offset..], prompt)?;
-                    send(Msg::Final(join_words(&stream.unsent(&words))));
+                    send(Msg::Final(join_words(&stream.remaining(&words))));
                     stream = Stream::default();
                 }
                 // Verworfenes Geräusch: der offene Rest wird zurückgenommen.
@@ -133,8 +129,6 @@ struct Stream {
     offset: usize,
     /// Anzahl der Wörter im Fenster, die bereits als final gesendet wurden.
     committed: usize,
-    sent: Vec<String>,
-    cap_next: bool,
     /// Hypothese des letzten Durchlaufs.
     prev: Vec<Word>,
     last_pass_len: usize,
@@ -145,15 +139,14 @@ impl Stream {
     fn pass(&mut self, words: Vec<Word>, window_len: usize) -> (Vec<String>, Vec<String>) {
         let agreed = self.prev.iter().zip(&words).take_while(|(a, b)| word_key(&a.0) == word_key(&b.0)).count();
         let commit_before = window_len.saturating_sub(COMMIT_TAIL_SAMPLES);
-        let agreed_absatz_end = words[..agreed].iter().rposition(|w| word_key(&w.0) == "absatz").map_or(0, |i| i + 1);
-        let mut stable = sentence_commit_point(&words[..agreed], &words).max(agreed_absatz_end);
-        // Ohne Satzende hilft nur die Zeit, sonst wächst das Fenster unbegrenzt.
-        if window_len > MAX_WINDOW_SAMPLES {
-            stable = stable.max(words[..agreed].partition_point(|(_, end)| *end <= commit_before));
-        }
-        let newly: Vec<String> = if stable > self.committed {
-            let texts: Vec<String> = words[self.committed..stable].iter().map(|w| w.0.clone()).collect();
-            self.sent.extend(texts.iter().cloned());
+        // "Absatz" wird sofort bestätigt, sonst kann Whisper es im nächsten Durchlauf wieder verwerfen.
+        let absatz_end = words.iter().rposition(|w| word_key(&w.0) == "absatz").map_or(0, |i| i + 1);
+        let stable = words[..agreed]
+            .partition_point(|(_, end)| *end <= commit_before)
+            .max(sentence_commit_point(&words[..agreed]))
+            .max(absatz_end);
+        let newly = if stable > self.committed {
+            let texts = words[self.committed..stable].iter().map(|w| w.0.clone()).collect();
             self.committed = stable;
             texts
         } else {
@@ -167,7 +160,6 @@ impl Stream {
             && (stable == self.prev.len() || self.prev[stable].1 > self.prev[stable - 1].1);
         if cut_possible && (window_len > MAX_WINDOW_SAMPLES || ends_sentence(&self.prev[stable - 1].0)) {
             let cut = self.prev[stable - 1].1;
-            let after_absatz = word_key(&self.prev[stable - 1].0) == "absatz";
             self.offset += cut;
             self.prev = self
                 .prev
@@ -176,42 +168,15 @@ impl Stream {
                 .map(|(text, end)| (text, end.saturating_sub(cut)))
                 .collect();
             self.committed = 0;
-            self.sent.clear();
-            self.cap_next = after_absatz;
-            if let Some(first) = self.prev.first_mut().filter(|_| after_absatz) {
-                first.0 = capitalize_first(&first.0);
-            }
         }
 
         let tail = self.remaining(&self.prev);
         (newly, tail)
     }
 
-    /// Wörter ab dem Fensterende der letzten Hypothese.
+    /// Wörter einer abschließenden Transkription, die noch nicht gesendet wurden.
     fn remaining(&self, words: &[Word]) -> Vec<String> {
         words.get(self.committed..).unwrap_or_default().iter().map(|w| w.0.clone()).collect()
-    }
-
-    /// Wörter einer abschließenden Transkription, die noch nicht gesendet wurden.
-    fn unsent(&self, words: &[Word]) -> Vec<String> {
-        let n = self.sent.len();
-        let skip = (1..=n.min(UNSENT_ANCHOR_WORDS))
-            .rev()
-            .find_map(|k| {
-                let anchor = &self.sent[n - k..];
-                (0..=words.len().checked_sub(k)?)
-                    .filter(|&p| anchor.iter().enumerate().all(|(j, s)| word_key(&words[p + j].0) == word_key(s)))
-                    .min_by_key(|&p| (p + k).abs_diff(n))
-                    .map(|p| p + k)
-            })
-            .unwrap_or(0);
-        let mut texts: Vec<String> = words[skip..].iter().map(|w| w.0.clone()).collect();
-        if skip == 0 && self.cap_next {
-            if let Some(first) = texts.first_mut() {
-                *first = capitalize_first(first);
-            }
-        }
-        texts
     }
 }
 
@@ -380,77 +345,8 @@ fn transcribe(state: &mut WhisperState, audio: &[f32], prompt: Option<&str>) -> 
         words.extend(text.split_whitespace().map(|word| (word.to_string(), end)));
     }
     let mut words = collapse_repeats(words);
-    fix_eszett(&mut words);
     apply_paragraphs(&mut words);
     Ok(words)
-}
-
-// Falsch geschriebene "ss"-Wörter (Kleinschreibung) und ihre korrekte Form mit "ß".
-const SS_TO_ESZETT: &[(&str, &str)] = &[
-    ("strasse", "straße"),
-    ("strassen", "straßen"),
-    ("gross", "groß"),
-    ("grosse", "große"),
-    ("grossen", "großen"),
-    ("grosser", "großer"),
-    ("grosses", "großes"),
-    ("heiss", "heiß"),
-    ("heisse", "heiße"),
-    ("heissen", "heißen"),
-    ("heisst", "heißt"),
-    ("weiss", "weiß"),
-    ("weisse", "weiße"),
-    ("weissen", "weißen"),
-    ("weisses", "weißes"),
-    ("fuss", "fuß"),
-    ("füsse", "füße"),
-    ("füssen", "füßen"),
-    ("gruss", "gruß"),
-    ("grüsse", "grüße"),
-    ("grüssen", "grüßen"),
-    ("spass", "spaß"),
-    ("süss", "süß"),
-    ("süsse", "süße"),
-    ("süssen", "süßen"),
-    ("ausser", "außer"),
-    ("ausserdem", "außerdem"),
-    ("ausserhalb", "außerhalb"),
-    ("aussen", "außen"),
-    ("schliessen", "schließen"),
-    ("schliesst", "schließt"),
-    ("schliesslich", "schließlich"),
-    ("schiessen", "schießen"),
-    ("beissen", "beißen"),
-    ("reissen", "reißen"),
-    ("stoss", "stoß"),
-    ("stossen", "stoßen"),
-    ("massnahme", "maßnahme"),
-    ("massnahmen", "maßnahmen"),
-];
-
-/// Ersetzt bekannte "ss"-Schreibweisen durch "ß"; prüft jeden Bindestrich-Teil einzeln.
-fn fix_eszett(words: &mut [Word]) {
-    for (text, _) in words.iter_mut() {
-        *text = text.split('-').map(fix_eszett_part).collect::<Vec<_>>().join("-");
-    }
-}
-
-fn fix_eszett_part(part: &str) -> String {
-    let key = word_key(part);
-    let Some((_, right)) = SS_TO_ESZETT.iter().find(|(wrong, _)| *wrong == key) else {
-        return part.to_string();
-    };
-    let start = part.find(|c: char| c.is_alphanumeric()).unwrap_or(0);
-    let end = part
-        .rfind(|c: char| c.is_alphanumeric())
-        .map_or(part.len(), |i| i + part[i..].chars().next().map_or(0, char::len_utf8));
-    let core = &part[start..end];
-    let replacement = if core.chars().next().is_some_and(char::is_uppercase) {
-        capitalize_first(right)
-    } else {
-        right.to_string()
-    };
-    format!("{}{}{}", &part[..start], replacement, &part[end..])
 }
 
 /// Entfernt Wiederholungsschleifen: eine Wortfolge bleibt höchstens zweimal in Folge stehen.
@@ -556,20 +452,15 @@ fn ends_sentence(word: &str) -> bool {
     }
 }
 
-/// Wahr, wenn das Wort mit einem Komma endet.
-fn ends_comma(word: &str) -> bool {
-    word.trim_end_matches(|c: char| matches!(c, '"' | '\'' | ')' | ']' | '»' | '“' | '”')).ends_with(',')
-}
-
-/// Länge des Präfixes bis zum letzten bestätigten Satzende bzw. Komma, dem in `words` genug Wörter folgen.
-fn sentence_commit_point(agreed: &[Word], words: &[Word]) -> usize {
+/// Länge des Präfixes bis zum letzten Satzende, dem genug bestätigte Wörter folgen oder das "Absatz" ist.
+fn sentence_commit_point(agreed: &[Word]) -> usize {
     agreed
         .iter()
         .enumerate()
         .rev()
         .find(|(i, (text, _))| {
-            let after = words.len() - (*i + 1);
-            (ends_sentence(text) && after >= SENTENCE_LOOKAHEAD_WORDS) || (ends_comma(text) && after >= COMMA_LOOKAHEAD_WORDS)
+            ends_sentence(text)
+                && (word_key(text) == "absatz" || agreed.len() - (*i + 1) >= SENTENCE_LOOKAHEAD_WORDS)
         })
         .map_or(0, |(i, _)| i + 1)
 }
