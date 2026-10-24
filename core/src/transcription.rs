@@ -67,7 +67,7 @@ pub fn run_transcriber(
     mut send: impl FnMut(Msg),
 ) -> Result<(), Box<dyn Error>> {
     let mut state = transcriber.ctx.create_state()?;
-    send(Msg::Status(format!("Bereit – {}", source.description)));
+    send(Msg::Status("Bereit".to_string()));
 
     let mut resampler = Resampler::new(source.sample_rate, WHISPER_SAMPLE_RATE);
     let mut segmenter = Segmenter::new();

@@ -94,13 +94,13 @@ impl App {
         status_row = status_row.push(settings_button);
         let status_bar = container(status_row).padding([6, 10]).width(Fill).style(surface_style);
 
-        let live_style: fn(&Theme, button::Status) -> button::Style = if self.live { button::success } else { button::primary };
-        let live_button = button("Automatisch einfügen").on_press(Message::ToggleLive(!self.live)).style(live_style).padding([6, 12]).width(Fill);
+        let record_style: fn(&Theme, button::Status) -> button::Style = if self.recording { button::success } else { button::primary };
+        let record_button = button("Aufnahme").on_press(Message::ToggleRecording(!self.recording)).style(record_style).padding([6, 12]).width(Fill);
 
         let toolbar_row = row![
             button("Kopieren").on_press(Message::Copy).style(button::primary).padding([6, 12]).width(Length::FillPortion(1)),
             button("Löschen").on_press(Message::Clear).style(button::primary).padding([6, 12]).width(Length::FillPortion(1)),
-            live_button.width(Length::FillPortion(2)),
+            record_button.width(Length::FillPortion(2)),
         ]
         .spacing(8)
         .align_y(iced::alignment::Vertical::Center);
@@ -142,18 +142,38 @@ impl App {
                 })
                 .width(Fill),
             )
-            .push(text("Automatisch Einfügen geringe Verzögerung"))
             .push(
-                container(
-                    toggler(self.live_edit)
-                        .label("Vorschau mit einfügen")
-                        .on_toggle(Message::LiveEditToggled)
-                        .size(22)
-                        .text_size(14)
-                        .spacing(4),
-                )
-                .padding([2, 10])
-                .width(Fill),
+                row![
+                    column![
+                        text("Automatisch einfügen"),
+                        container(
+                            toggler(self.auto_insert)
+                                .label("Erkannten Text automatisch einfügen")
+                                .on_toggle(Message::AutoInsertToggled)
+                                .size(22)
+                                .text_size(14)
+                                .spacing(4),
+                        )
+                        .padding([2, 10]),
+                    ]
+                    .spacing(8)
+                    .width(Length::FillPortion(1)),
+                    column![
+                        text(" "),
+                        container(
+                            toggler(self.live_edit)
+                                .label("Vorschau mit einfügen")
+                                .on_toggle(Message::LiveEditToggled)
+                                .size(22)
+                                .text_size(14)
+                                .spacing(4),
+                        )
+                        .padding([2, 10]),
+                    ]
+                    .spacing(8)
+                    .width(Length::FillPortion(1)),
+                ]
+                .spacing(16),
             )
             .push(text("Systemprompt"))
             .push(container(text_editor(&self.prompt_input).on_action(Message::PromptEdit).height(200)).style(outline_style))

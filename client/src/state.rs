@@ -28,7 +28,8 @@ pub enum Message {
     Tick,
     Copy,
     Clear,
-    ToggleLive(bool),
+    ToggleRecording(bool),
+    AutoInsertToggled(bool),
     LiveEditToggled(bool),
     ToggleSettings,
     ThemeSelected(bool),
@@ -47,7 +48,8 @@ pub struct App {
     pub(super) text: String,
     pub(super) partial: String,
     pub(super) status: String,
-    pub(super) live: bool,
+    pub(super) recording: bool,
+    pub(super) auto_insert: bool,
     pub(super) live_edit: bool,
     pub(super) typed_partial: String,
     pub(super) enigo: Option<Enigo>,
@@ -73,16 +75,17 @@ pub fn boot() -> App {
     let prompt = load_prompt();
     let mic = load_mic();
     let dark = load_dark();
+    let auto_insert = load_auto_insert();
     let live_edit = load_live_edit();
     let stop = Arc::new(AtomicBool::new(false));
-    let backend = spawn_backend(&server, model, &prompt, mic.clone(), stop.clone(), make_send(tx.clone()));
     App {
         rx,
         tx,
         text: String::new(),
         partial: String::new(),
-        status: String::new(),
-        live: false,
+        status: "Mikrofon aus".to_string(),
+        recording: false,
+        auto_insert,
         live_edit,
         typed_partial: String::new(),
         enigo: None,
@@ -96,7 +99,7 @@ pub fn boot() -> App {
         stop,
         show_settings: false,
         window_size: Size::new(500.0, 180.0),
-        backend: Some(backend),
+        backend: None,
         theme: app_theme(dark),
         dark,
     }
@@ -171,6 +174,16 @@ fn load_dark() -> bool {
 
 fn save_dark(dark: bool) {
     write_config("theme.txt", if dark { "dark" } else { "light" });
+}
+
+fn load_auto_insert() -> bool {
+    config_path("auto_insert.txt")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .is_some_and(|mode| mode.trim() == "on")
+}
+
+fn save_auto_insert(on: bool) {
+    write_config("auto_insert.txt", if on { "on" } else { "off" });
 }
 
 fn load_live_edit() -> bool {
@@ -301,12 +314,24 @@ impl App {
                 self.text.clear();
                 self.partial.clear();
             }
-            Message::ToggleLive(live) => {
-                self.live = live;
-                if live {
-                    self.text.clear();
+            Message::ToggleRecording(recording) => {
+                self.recording = recording;
+                if recording {
                     self.partial.clear();
                     self.typed_partial.clear();
+                    self.start_backend();
+                } else {
+                    self.stop_backend();
+                    self.partial.clear();
+                    self.erase_typed_partial();
+                    self.status = "Mikrofon aus".to_string();
+                }
+            }
+            Message::AutoInsertToggled(on) => {
+                self.auto_insert = on;
+                save_auto_insert(on);
+                if !on {
+                    self.erase_typed_partial();
                 }
             }
             Message::LiveEditToggled(on) => {
@@ -374,7 +399,7 @@ impl App {
             match msg {
                 Msg::Status(status) => self.status = status,
                 Msg::Partial(text) => {
-                    if self.live && self.live_edit {
+                    if self.recording && self.auto_insert && self.live_edit {
                         self.update_typed_partial(&text);
                     }
                     self.partial = text;
@@ -382,7 +407,10 @@ impl App {
                 Msg::Final(text) => {
                     self.partial.clear();
                     self.erase_typed_partial();
-                    if self.live && !text.is_empty() {
+                    if !self.recording {
+                        continue;
+                    }
+                    if self.auto_insert && !text.is_empty() {
                         let final_text = if text.ends_with('\n') { text.clone() } else { format!("{text} ") };
                         self.type_live(&final_text);
                     }
@@ -397,14 +425,25 @@ impl App {
         }
     }
 
-    /// Beendet die aktuelle Verbindung und startet das Backend mit dem aktuellen Modell neu.
+    /// Übernimmt eine neue Serveradresse; das Backend läuft nur während einer Aufnahme.
     fn restart(&mut self, server: String) {
-        self.stop.store(true, Ordering::SeqCst);
-        join_backend(self.backend.take());
-        self.stop = Arc::new(AtomicBool::new(false));
         self.server = server;
+        if self.recording {
+            self.stop_backend();
+            self.start_backend();
+        }
+    }
+
+    fn start_backend(&mut self) {
+        self.stop = Arc::new(AtomicBool::new(false));
         self.status = format!("Verbinde mit {} ...", self.server);
         self.backend = Some(spawn_backend(&self.server, self.model, &self.prompt, self.mic.clone(), self.stop.clone(), make_send(self.tx.clone())));
+    }
+
+    /// Beendet Mikrofon und Verbindung, sodass kein Audio mehr gesendet wird.
+    fn stop_backend(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        join_backend(self.backend.take());
     }
 
     fn ensure_enigo(&mut self) -> bool {
@@ -418,7 +457,6 @@ impl App {
             }
             Err(err) => {
                 self.status = format!("Automatisch Einfügen nicht verfügbar: {err}");
-                self.live = false;
                 false
             }
         }

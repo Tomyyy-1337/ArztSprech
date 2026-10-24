@@ -36,7 +36,7 @@ where
         }
     });
 
-    send(Msg::Status(format!("Verbunden mit {server} – {}", source.description)));
+    send(Msg::Status(format!("Verbunden mit {server}")));
     while let Ok(samples) = source.rx.recv() {
         if stop.load(Ordering::SeqCst) {
             break;
