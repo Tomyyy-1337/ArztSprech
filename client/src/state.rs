@@ -36,6 +36,12 @@ pub enum Message {
     WindowResized(Size),
     ServerInput(String),
     ApplyServer,
+    #[cfg(feature = "remote")]
+    UsernameInput(String),
+    #[cfg(feature = "remote")]
+    ProductKeyInput(String),
+    #[cfg(feature = "remote")]
+    ApplyCredentials,
     ModelSelected(Model),
     MicSelected(String),
     PromptEdit(text_editor::Action),
@@ -55,6 +61,10 @@ pub struct App {
     pub(super) enigo: Option<Enigo>,
     pub(super) server: String,
     pub(super) server_input: String,
+    #[cfg(feature = "remote")]
+    pub(super) username_input: String,
+    #[cfg(feature = "remote")]
+    pub(super) product_key_input: String,
     pub(super) model: Model,
     pub(super) prompt: String,
     pub(super) prompt_input: text_editor::Content,
@@ -71,6 +81,8 @@ pub struct App {
 pub fn boot() -> App {
     let (tx, rx) = mpsc::channel();
     let server = default_server();
+    #[cfg(feature = "remote")]
+    let (username, product_key) = load_credentials();
     let model = default_model();
     let prompt = load_prompt();
     let mic = load_mic();
@@ -93,6 +105,10 @@ pub fn boot() -> App {
         enigo: None,
         server: server.clone(),
         server_input: server,
+        #[cfg(feature = "remote")]
+        username_input: username,
+        #[cfg(feature = "remote")]
+        product_key_input: product_key,
         model,
         prompt_input: text_editor::Content::with_text(&prompt),
         prompt,
@@ -243,10 +259,40 @@ fn spawn_backend(server: &str, model: Model, prompt: &str, mic: Option<String>, 
             }
         };
         let error_send = send.clone();
-        if let Err(err) = client::stream_microphone(&server, model, &prompt, mic, stop, send) {
+        let result = load_login().and_then(|login| {
+            client::stream_microphone(&server, model, &prompt, mic, &login, stop, send).map_err(|err| err.to_string())
+        });
+        if let Err(err) = result {
             error_send(Msg::Status(format!("Fehler: {err}")));
         }
     })
+}
+
+/// Liest `credentials.txt`: Zeile 1 Benutzername, Zeile 2 Passwort. Fehlende Werte sind leer.
+#[cfg(feature = "remote")]
+fn load_credentials() -> (String, String) {
+    let credentials = config_path("credentials.txt")
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let mut lines = credentials.lines().map(|line| line.trim().to_string());
+    let username = lines.next().unwrap_or_default();
+    let password = lines.next().unwrap_or_default();
+    (username, password)
+}
+
+#[cfg(feature = "remote")]
+fn save_credentials(username: &str, password: &str) {
+    write_config("credentials.txt", &format!("{username}\n{password}\n"));
+}
+
+/// Liest die Zugangsdaten aus `credentials.txt`. Das Serverzertifikat ist in den Client eingebettet.
+#[cfg(feature = "remote")]
+fn load_login() -> Result<client::Login, String> {
+    let (username, password) = load_credentials();
+    if username.is_empty() || password.is_empty() {
+        return Err("credentials.txt: Benutzername (Zeile 1) und Produktschlüssel (Zeile 2) angeben".to_string());
+    }
+    Ok(client::Login { username, password })
 }
 
 #[cfg(not(feature = "remote"))]
@@ -364,7 +410,7 @@ impl App {
                 if self.show_settings {
                     self.mic_options = audio::input_device_names();
                 }
-                let size = if self.show_settings { Size::new(700.0, 700.0) } else { self.window_size };
+                let size = if self.show_settings { Size::new(700.0, 780.0) } else { self.window_size };
                 return window::latest().and_then(move |id| window::resize(id, size));
             }
             Message::WindowResized(size) => {
@@ -380,6 +426,23 @@ impl App {
                 }
             }
             Message::ServerInput(server) => self.server_input = server,
+            #[cfg(feature = "remote")]
+            Message::UsernameInput(username) => self.username_input = username,
+            #[cfg(feature = "remote")]
+            Message::ProductKeyInput(product_key) => self.product_key_input = product_key,
+            #[cfg(feature = "remote")]
+            Message::ApplyCredentials => {
+                let username = self.username_input.trim().to_string();
+                let product_key = self.product_key_input.trim().to_string();
+                if username.is_empty() || product_key.is_empty() {
+                    self.status = "Benutzername und Produktschlüssel eingeben".to_string();
+                } else {
+                    save_credentials(&username, &product_key);
+                    self.status = "Zugangsdaten gespeichert".to_string();
+                    let server = self.server.clone();
+                    self.restart(server);
+                }
+            }
             Message::ApplyServer => {
                 let server = self.server_input.trim().to_string();
                 if !server.is_empty() {

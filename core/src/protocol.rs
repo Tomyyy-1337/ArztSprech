@@ -21,6 +21,47 @@ const MAX_AUDIO_SAMPLES: usize = 16_000 * 10;
 const MAX_TEXT_BYTES: usize = 1 << 20;
 pub const MAX_PROMPT_BYTES: usize = 4 * 1024;
 
+const MAX_CREDENTIAL_BYTES: usize = 256;
+
+/// Anmeldung nach dem TLS-Handshake: Benutzername und Passwort.
+pub fn write_login(w: &mut impl Write, username: &str, password: &str) -> io::Result<()> {
+    for value in [username, password] {
+        let bytes = value.as_bytes();
+        if bytes.len() > MAX_CREDENTIAL_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Zugangsdaten zu lang"));
+        }
+        w.write_all(&(bytes.len() as u32).to_le_bytes())?;
+        w.write_all(bytes)?;
+    }
+    Ok(())
+}
+
+pub fn read_login(r: &mut impl Read) -> io::Result<(String, String)> {
+    let username = read_credential(r)?;
+    let password = read_credential(r)?;
+    Ok((username, password))
+}
+
+fn read_credential(r: &mut impl Read) -> io::Result<String> {
+    let len = read_u32(r)? as usize;
+    if len > MAX_CREDENTIAL_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Zugangsdaten zu lang"));
+    }
+    let mut bytes = vec![0u8; len];
+    r.read_exact(&mut bytes)?;
+    String::from_utf8(bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+}
+
+pub fn write_login_result(w: &mut impl Write, authorized: bool) -> io::Result<()> {
+    w.write_all(&[u8::from(authorized)])
+}
+
+pub fn read_login_result(r: &mut impl Read) -> io::Result<bool> {
+    let mut byte = [0u8; 1];
+    r.read_exact(&mut byte)?;
+    Ok(byte[0] == 1)
+}
+
 pub fn write_hello(w: &mut impl Write, sample_rate: u32, model: Model, prompt: &str) -> io::Result<()> {
     let prompt = prompt.as_bytes();
     if prompt.len() > MAX_PROMPT_BYTES {

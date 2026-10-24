@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 arztsprech-core = { path = "../core", features = ["transcriber"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [features]
 cuda = ["arztsprech-core/cuda"]

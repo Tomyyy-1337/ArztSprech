@@ -1,2 +1,4 @@
 /target
 /models
+/server/certs/
+/server/certs/users.txt

@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 cpal = "0.18.2"
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
 whisper-rs = { version = "0.16.0", optional = true }
 
 [features]

@@ -193,6 +193,26 @@ impl App {
                 )
                 .push(text(format!("Aktuell: {}", self.server)).color(rgb(140, 144, 155)));
         }
+        #[cfg(feature = "remote")]
+        {
+            content = content
+                .push(text("Zugangsdaten"))
+                .push(
+                    row![
+                        text_input("Benutzername", &self.username_input)
+                            .on_input(Message::UsernameInput)
+                            .on_submit(Message::ApplyCredentials)
+                            .width(Length::FillPortion(1)),
+                        text_input("Produktschlüssel", &self.product_key_input)
+                            .on_input(Message::ProductKeyInput)
+                            .on_submit(Message::ApplyCredentials)
+                            .width(Length::FillPortion(1)),
+                        button("Übernehmen").on_press(Message::ApplyCredentials),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::alignment::Vertical::Center),
+                );
+        }
 
         let page = column![header, scrollable(content).width(Fill).height(Fill)].spacing(12);
         container(page)

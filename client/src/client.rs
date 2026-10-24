@@ -1,19 +1,28 @@
 use std::error::Error;
-use std::net::{Shutdown, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use arztsprech_core::audio;
 use arztsprech_core::protocol::{self, Model, Msg};
+use arztsprech_core::secure;
 
+/// Serverzertifikat, das beim Bauen in den Client eingebettet wird. Dem Client wird nur dieses Zertifikat vertraut.
+const SERVER_CERT: &[u8] = include_bytes!("../../server/certs/server-cert.pem");
 
-/// Sendet Mikrofon-Audio an den Server und leitet dessen Nachrichten an `send` weiter.
+/// Zugangsdaten für die Anmeldung am Server.
+pub struct Login {
+    pub username: String,
+    pub password: String,
+}
+
+/// Sendet Mikrofon-Audio verschlüsselt an den Server und leitet dessen Nachrichten an `send` weiter.
 /// Beendet die Verbindung, sobald `stop` gesetzt wird.
 pub fn stream_microphone<F>(
     server: &str,
     model: Model,
     prompt: &str,
     mic: Option<String>,
+    login: &Login,
     stop: Arc<AtomicBool>,
     send: F,
 ) -> Result<(), Box<dyn Error>>
@@ -21,10 +30,15 @@ where
     F: Fn(Msg) + Clone + Send + 'static,
 {
     let source = audio::open_microphone(mic.as_deref())?;
-    let mut writer = TcpStream::connect(server)?;
+    let tls = secure::client_config(SERVER_CERT)?;
+    let (mut reader, mut writer) = secure::connect(server, tls)?;
+
+    protocol::write_login(&mut writer, &login.username, &login.password)?;
+    if !protocol::read_login_result(&mut reader)? {
+        return Err("Anmeldung fehlgeschlagen: Benutzername oder Passwort falsch".into());
+    }
     protocol::write_hello(&mut writer, source.sample_rate, model, prompt)?;
 
-    let mut reader = writer.try_clone()?;
     let reply_send = send.clone();
     let reader_stop = stop.clone();
     std::thread::spawn(move || {
@@ -43,6 +57,5 @@ where
         }
         protocol::write_audio(&mut writer, &samples)?;
     }
-    let _ = writer.shutdown(Shutdown::Both);
     Ok(())
 }
