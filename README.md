@@ -24,6 +24,6 @@ cargo run --release -p arztsprech-client --features remote
 ## Trigger GitHub action
 
 ```bash
-git tag v0.1.12
-git push origin v0.1.12
+git tag v0.1.14
+git push origin v0.1.14
 ```

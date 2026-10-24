@@ -11,9 +11,13 @@ path = "src/main.rs"
 arztsprech-core = { path = "../core"}
 iced = { version = "0.14", default-features = false, features = ["tiny-skia", "smol"] }
 enigo = "0.6.1"
+image = { version = "0.25.10", default-features = false, features = ["ico"] }
 
 [features]
 standalone = ["arztsprech-core/transcriber"]
 remote = []
 cuda = ["arztsprech-core/cuda"]
 vulkan = ["arztsprech-core/vulkan"]
+
+[target."cfg(windows)".build-dependencies]
+winres = "0.1.12"

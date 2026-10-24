@@ -78,6 +78,8 @@ pub fn boot() -> App {
     let auto_insert = load_auto_insert();
     let live_edit = load_live_edit();
     let stop = Arc::new(AtomicBool::new(false));
+    #[cfg(not(feature = "remote"))]
+    preload_model(model, tx.clone());
     App {
         rx,
         tx,
@@ -268,16 +270,35 @@ fn join_backend(handle: Option<std::thread::JoinHandle<()>>) {
 #[cfg(feature = "remote")]
 fn join_backend(_handle: Option<std::thread::JoinHandle<()>>) {}
 
-/// Loads each model once and keeps it; reloading on every switch exhausted the GPU.
+/// Keeps only the most recently used model loaded. The lock also makes a recording
+/// wait for an in-progress preload instead of loading the same model twice.
 #[cfg(not(feature = "remote"))]
-fn cached_transcriber(model: Model) -> Result<&'static Transcriber, Box<dyn Error>> {
-    static CACHE: [std::sync::OnceLock<Transcriber>; 2] = [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
-    let slot = &CACHE[model as usize];
-    if let Some(transcriber) = slot.get() {
-        return Ok(transcriber);
+fn cached_transcriber(model: Model) -> Result<Arc<Transcriber>, Box<dyn Error>> {
+    static CACHE: std::sync::Mutex<Option<(Model, Arc<Transcriber>)>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((loaded, transcriber)) = cache.as_ref() {
+        if *loaded == model {
+            return Ok(transcriber.clone());
+        }
     }
-    let transcriber = Transcriber::load(model.path())?;
-    Ok(slot.get_or_init(|| transcriber))
+    // Free the previous model before loading the new one to avoid holding both in GPU memory.
+    *cache = None;
+    let transcriber = Arc::new(Transcriber::load(model.path())?);
+    *cache = Some((model, transcriber.clone()));
+    Ok(transcriber)
+}
+
+/// Lädt das gewählte Modell im Hintergrund, damit es beim ersten Diktat bereitsteht.
+#[cfg(not(feature = "remote"))]
+fn preload_model(model: Model, tx: Sender<Msg>) {
+    std::thread::spawn(move || {
+        let _ = tx.send(Msg::Status(format!("Lade Modell {} ...", model_label(model))));
+        let status = match cached_transcriber(model) {
+            Ok(_) => "Mikrofon aus".to_string(),
+            Err(err) => format!("Fehler: {err}"),
+        };
+        let _ = tx.send(Msg::Status(status));
+    });
 }
 
 #[cfg(not(feature = "remote"))]
@@ -291,7 +312,7 @@ fn run_standalone(model: Model, prompt: &str, mic: Option<String>, stop: Arc<Ato
     send(Msg::Status(format!("Lade Modell {} ...", model_label(model))));
     let transcriber = cached_transcriber(model)?;
     let prompt = (!prompt.trim().is_empty()).then_some(prompt);
-    run_transcriber(transcriber, audio::open_microphone(mic.as_deref())?, &stop, prompt, send)
+    run_transcriber(&transcriber, audio::open_microphone(mic.as_deref())?, &stop, prompt, send)
 }
 
 impl App {
@@ -370,6 +391,10 @@ impl App {
                 if model != self.model {
                     self.model = model;
                     save_model(model);
+                    #[cfg(not(feature = "remote"))]
+                    if !self.recording {
+                        preload_model(model, self.tx.clone());
+                    }
                     let server = self.server.clone();
                     self.restart(server);
                 }
