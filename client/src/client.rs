@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,11 +18,13 @@ pub struct Login {
 
 /// Sendet Mikrofon-Audio verschlüsselt an den Server und leitet dessen Nachrichten an `send` weiter.
 /// Beendet die Verbindung, sobald `stop` gesetzt wird.
+#[allow(clippy::too_many_arguments)]
 pub fn stream_microphone<F>(
     server: &str,
     model: Model,
     prompt: &str,
     mic: Option<String>,
+    tap: Option<Sender<Vec<f32>>>,
     login: &Login,
     stop: Arc<AtomicBool>,
     send: F,
@@ -29,7 +32,7 @@ pub fn stream_microphone<F>(
 where
     F: Fn(Msg) + Clone + Send + 'static,
 {
-    let source = audio::open_microphone(mic.as_deref())?;
+    let source = audio::open_microphone(mic.as_deref(), tap)?;
     let tls = secure::client_config(SERVER_CERT)?;
     let (mut reader, mut writer) = secure::connect(server, tls)?;
 

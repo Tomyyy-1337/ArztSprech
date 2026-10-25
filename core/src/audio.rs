@@ -29,8 +29,7 @@ pub fn input_device_names() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Opens the named input device, or the system default when `name` is `None`.
-pub fn open_microphone(name: Option<&str>) -> Result<AudioSource, Box<dyn Error>> {
+fn find_input_device(name: Option<&str>) -> Result<cpal::Device, Box<dyn Error>> {
     let host = cpal::default_host();
     let device = match name {
         Some(name) => host
@@ -39,11 +38,23 @@ pub fn open_microphone(name: Option<&str>) -> Result<AudioSource, Box<dyn Error>
             .ok_or_else(|| format!("Mikrofon nicht gefunden: {name}"))?,
         None => host.default_input_device().ok_or("Kein Mikrofon gefunden")?,
     };
+    Ok(device)
+}
+
+/// Sample rate the named input device (or the system default) delivers.
+pub fn input_sample_rate(name: Option<&str>) -> Result<u32, Box<dyn Error>> {
+    Ok(find_input_device(name)?.default_input_config()?.sample_rate())
+}
+
+/// Opens the named input device, or the system default when `name` is `None`.
+/// Every mono chunk is also copied to `tap` when given, e.g. for recording.
+pub fn open_microphone(name: Option<&str>, tap: Option<Sender<Vec<f32>>>) -> Result<AudioSource, Box<dyn Error>> {
+    let device = find_input_device(name)?;
     let supported = device.default_input_config()?;
     let config = supported.config();
 
     let (tx, rx) = mpsc::channel::<Vec<f32>>();
-    let stream = build_stream(&device, &supported, config.clone(), tx)?;
+    let stream = build_stream(&device, &supported, config, tx, tap)?;
     stream.play()?;
 
     Ok(AudioSource {
@@ -59,11 +70,12 @@ fn build_stream(
     supported: &cpal::SupportedStreamConfig,
     config: cpal::StreamConfig,
     tx: Sender<Vec<f32>>,
+    tap: Option<Sender<Vec<f32>>>,
 ) -> Result<cpal::Stream, Box<dyn Error>> {
     let stream = match supported.sample_format() {
-        cpal::SampleFormat::F32 => build_typed::<f32>(device, config, tx)?,
-        cpal::SampleFormat::I16 => build_typed::<i16>(device, config, tx)?,
-        cpal::SampleFormat::U16 => build_typed::<u16>(device, config, tx)?,
+        cpal::SampleFormat::F32 => build_typed::<f32>(device, config, tx, tap)?,
+        cpal::SampleFormat::I16 => build_typed::<i16>(device, config, tx, tap)?,
+        cpal::SampleFormat::U16 => build_typed::<u16>(device, config, tx, tap)?,
         other => return Err(format!("Nicht unterstütztes Sample-Format: {other:?}").into()),
     };
     Ok(stream)
@@ -74,6 +86,7 @@ fn build_typed<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     tx: Sender<Vec<f32>>,
+    tap: Option<Sender<Vec<f32>>>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample,
@@ -83,10 +96,13 @@ where
     device.build_input_stream::<T, _, _>(
         config,
         move |data: &[T], _| {
-            let mono = data
+            let mono: Vec<f32> = data
                 .chunks(channels)
                 .map(|frame| frame.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels as f32)
                 .collect();
+            if let Some(tap) = &tap {
+                let _ = tap.send(mono.clone());
+            }
             let _ = tx.send(mono);
         },
         |err| eprintln!("Audiofehler: {err}"),

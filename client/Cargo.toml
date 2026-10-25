@@ -12,6 +12,7 @@ arztsprech-core = { path = "../core"}
 iced = { version = "0.14", default-features = false, features = ["tiny-skia", "smol"] }
 enigo = "0.6.1"
 image = { version = "0.25.10", default-features = false, features = ["ico"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [features]
 standalone = ["arztsprech-core/transcriber"]

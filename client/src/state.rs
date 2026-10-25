@@ -1,14 +1,18 @@
+use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use enigo::{Enigo, Keyboard, Settings};
 use iced::widget::text_editor;
 use iced::{Size, Subscription, Task, Theme, window};
 
 use arztsprech_core::audio;
+use arztsprech_core::playback::Player;
 use arztsprech_core::protocol::{Model, Msg};
+use arztsprech_core::recording;
 #[cfg(feature = "remote")]
 use crate::client;
 #[cfg(not(feature = "remote"))]
@@ -22,6 +26,8 @@ use super::layout::app_theme;
 const DEFAULT_SERVER: &str = "127.0.0.1:7878";
 const DEFAULT_PROMPT: &str = "Deutschsprachiges gastroenterologisches Diktat. Fachbegriffe: ";
 pub(super) const SYSTEM_MIC: &str = "Systemstandard";
+/// Breite des Aufnahmen-Panels, um die sich das Fenster beim Ein- und Ausklappen ändert.
+pub(super) const PANEL_WIDTH: f32 = 320.0;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -29,6 +35,12 @@ pub enum Message {
     Copy,
     Clear,
     ToggleRecording(bool),
+    TogglePanel,
+    OpenAudioFolder,
+    SelectClip(u64),
+    HoverClip(Option<u64>),
+    TogglePlayback,
+    Seek(f64),
     AutoInsertToggled(bool),
     LiveEditToggled(bool),
     ToggleSettings,
@@ -48,10 +60,36 @@ pub enum Message {
     ApplyPrompt,
 }
 
+/// Eine Aufnahme (Start bis Stopp des Backends) mit ihrer WAV-Datei.
+pub(super) struct Clip {
+    pub(super) id: u64,
+    /// Lokale Startzeit als `HH:MM:SS`.
+    pub(super) clock: String,
+    /// Start relativ zum Programmstart.
+    pub(super) start: Duration,
+    /// Ende relativ zum Programmstart; `None`, solange die Aufnahme läuft.
+    pub(super) end: Option<Duration>,
+    pub(super) path: PathBuf,
+}
+
+/// Finalisierter Transkripttext mit dem Zeitpunkt, zu dem er eintraf (relativ zum Programmstart).
+pub(super) struct Segment {
+    pub(super) range: Range<usize>,
+    pub(super) at: Duration,
+}
+
 pub struct App {
     pub(super) rx: Receiver<Msg>,
     pub(super) tx: Sender<Msg>,
+    pub(super) started: Instant,
     pub(super) text: String,
+    pub(super) segments: Vec<Segment>,
+    pub(super) clips: Vec<Clip>,
+    pub(super) next_clip_id: u64,
+    pub(super) selected_clip: Option<u64>,
+    pub(super) hovered_clip: Option<u64>,
+    pub(super) player: Option<Player>,
+    pub(super) panel_open: bool,
     pub(super) partial: String,
     pub(super) status: String,
     pub(super) recording: bool,
@@ -90,12 +128,23 @@ pub fn boot() -> App {
     let auto_insert = load_auto_insert();
     let live_edit = load_live_edit();
     let stop = Arc::new(AtomicBool::new(false));
+    if let Some(dir) = audio_dir() {
+        let _ = recording::clear_dir(&dir);
+    }
     #[cfg(not(feature = "remote"))]
     preload_model(model, tx.clone());
     App {
         rx,
         tx,
+        started: Instant::now(),
         text: String::new(),
+        segments: Vec::new(),
+        clips: Vec::new(),
+        next_clip_id: 0,
+        selected_clip: None,
+        hovered_clip: None,
+        player: None,
+        panel_open: false,
         partial: String::new(),
         status: "Mikrofon aus".to_string(),
         recording: false,
@@ -214,6 +263,11 @@ fn save_live_edit(on: bool) {
     write_config("live_edit.txt", if on { "on" } else { "off" });
 }
 
+/// Speicherort der Aufnahmen: `%APPDATA%\arztsprech\audio`. Wird beim Start geleert.
+fn audio_dir() -> Option<PathBuf> {
+    config_path("audio")
+}
+
 fn write_config(file: &str, content: &str) {
     if let Some(path) = config_path(file) {
         if let Some(dir) = path.parent() {
@@ -248,7 +302,7 @@ fn make_send(tx: Sender<Msg>) -> impl Fn(Msg) + Clone + Send + 'static {
 }
 
 #[cfg(feature = "remote")]
-fn spawn_backend(server: &str, model: Model, prompt: &str, mic: Option<String>, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
+fn spawn_backend(server: &str, model: Model, prompt: &str, mic: Option<String>, tap: Option<Sender<Vec<f32>>>, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
     let server = server.to_string();
     let prompt = prompt.to_string();
     std::thread::spawn(move || {
@@ -260,7 +314,7 @@ fn spawn_backend(server: &str, model: Model, prompt: &str, mic: Option<String>, 
         };
         let error_send = send.clone();
         let result = load_login().and_then(|login| {
-            client::stream_microphone(&server, model, &prompt, mic, &login, stop, send).map_err(|err| err.to_string())
+            client::stream_microphone(&server, model, &prompt, mic, tap, &login, stop, send).map_err(|err| err.to_string())
         });
         if let Err(err) = result {
             error_send(Msg::Status(format!("Fehler: {err}")));
@@ -296,11 +350,11 @@ fn load_login() -> Result<client::Login, String> {
 }
 
 #[cfg(not(feature = "remote"))]
-fn spawn_backend(_server: &str, model: Model, prompt: &str, mic: Option<String>, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
+fn spawn_backend(_server: &str, model: Model, prompt: &str, mic: Option<String>, tap: Option<Sender<Vec<f32>>>, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Clone + Send + 'static) -> std::thread::JoinHandle<()> {
     let prompt = prompt.to_string();
     std::thread::spawn(move || {
         let error_send = send.clone();
-        if let Err(err) = run_standalone(model, &prompt, mic, stop, send) {
+        if let Err(err) = run_standalone(model, &prompt, mic, tap, stop, send) {
             error_send(Msg::Status(format!("Fehler: {err}")));
         }
     })
@@ -348,7 +402,7 @@ fn preload_model(model: Model, tx: Sender<Msg>) {
 }
 
 #[cfg(not(feature = "remote"))]
-fn run_standalone(model: Model, prompt: &str, mic: Option<String>, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Send + 'static) -> Result<(), Box<dyn Error>> {
+fn run_standalone(model: Model, prompt: &str, mic: Option<String>, tap: Option<Sender<Vec<f32>>>, stop: Arc<AtomicBool>, send: impl Fn(Msg) + Send + 'static) -> Result<(), Box<dyn Error>> {
     let gate = stop.clone();
     let send = move |msg: Msg| {
         if !gate.load(Ordering::SeqCst) {
@@ -358,7 +412,7 @@ fn run_standalone(model: Model, prompt: &str, mic: Option<String>, stop: Arc<Ato
     send(Msg::Status(format!("Lade Modell {} ...", model_label(model))));
     let transcriber = cached_transcriber(model)?;
     let prompt = (!prompt.trim().is_empty()).then_some(prompt);
-    run_transcriber(&transcriber, audio::open_microphone(mic.as_deref())?, &stop, prompt, send)
+    run_transcriber(&transcriber, audio::open_microphone(mic.as_deref(), tap)?, &stop, prompt, send)
 }
 
 impl App {
@@ -379,7 +433,26 @@ impl App {
             Message::Copy => return iced::clipboard::write(self.text.clone()),
             Message::Clear => {
                 self.text.clear();
+                self.segments.clear();
                 self.partial.clear();
+            }
+            Message::TogglePanel => {
+                self.panel_open = !self.panel_open;
+                let size = self.window_target();
+                return window::latest().and_then(move |id| window::resize(id, size));
+            }
+            Message::SelectClip(id) => self.select_clip(id),
+            Message::OpenAudioFolder => self.open_audio_folder(),
+            Message::HoverClip(id) => self.hovered_clip = id,
+            Message::TogglePlayback => {
+                if let Some(player) = self.player.as_ref() {
+                    player.set_paused(!(player.is_paused() || player.is_finished()));
+                }
+            }
+            Message::Seek(secs) => {
+                if let Some(player) = self.player.as_ref() {
+                    player.seek_secs(secs);
+                }
             }
             Message::ToggleRecording(recording) => {
                 self.recording = recording;
@@ -410,12 +483,12 @@ impl App {
                 if self.show_settings {
                     self.mic_options = audio::input_device_names();
                 }
-                let size = if self.show_settings { Size::new(700.0, 780.0) } else { self.window_size };
+                let size = self.window_target();
                 return window::latest().and_then(move |id| window::resize(id, size));
             }
             Message::WindowResized(size) => {
                 if !self.show_settings {
-                    self.window_size = size;
+                    self.window_size = if self.panel_open { Size::new(size.width - PANEL_WIDTH, size.height) } else { size };
                 }
             }
             Message::ThemeSelected(dark) => {
@@ -506,7 +579,9 @@ impl App {
                         if !self.text.is_empty() && !self.text.ends_with('\n') {
                             self.text.push(' ');
                         }
+                        let start = self.text.len();
                         self.text.push_str(&text);
+                        self.segments.push(Segment { range: start..self.text.len(), at: self.started.elapsed() });
                     }
                 }
             }
@@ -525,13 +600,84 @@ impl App {
     fn start_backend(&mut self) {
         self.stop = Arc::new(AtomicBool::new(false));
         self.status = format!("Verbinde mit {} ...", self.server);
-        self.backend = Some(spawn_backend(&self.server, self.model, &self.prompt, self.mic.clone(), self.stop.clone(), make_send(self.tx.clone())));
+        let tap = self.begin_clip();
+        self.backend = Some(spawn_backend(&self.server, self.model, &self.prompt, self.mic.clone(), tap, self.stop.clone(), make_send(self.tx.clone())));
+    }
+
+    /// Legt eine neue Aufnahme an und gibt den Sender zurück, über den das Mikrofon in die WAV-Datei schreibt.
+    fn begin_clip(&mut self) -> Option<Sender<Vec<f32>>> {
+        let dir = audio_dir()?;
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            self.status = format!("Aufnahme nicht gespeichert: {err}");
+            return None;
+        }
+        let sample_rate = audio::input_sample_rate(self.mic.as_deref()).ok()?;
+        let id = self.next_clip_id;
+        self.next_clip_id += 1;
+        let path = dir.join(format!("clip-{id}.wav"));
+        match recording::start_writer(path.clone(), sample_rate) {
+            Ok(tap) => {
+                self.clips.push(Clip {
+                    id,
+                    clock: chrono::Local::now().format("%H:%M:%S").to_string(),
+                    start: self.started.elapsed(),
+                    end: None,
+                    path,
+                });
+                Some(tap)
+            }
+            Err(err) => {
+                self.status = format!("Aufnahme nicht gespeichert: {err}");
+                None
+            }
+        }
     }
 
     /// Beendet Mikrofon und Verbindung, sodass kein Audio mehr gesendet wird.
     fn stop_backend(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         join_backend(self.backend.take());
+        let now = self.started.elapsed();
+        if let Some(clip) = self.clips.iter_mut().rev().find(|clip| clip.end.is_none()) {
+            clip.end = Some(now);
+        }
+    }
+
+    fn window_target(&self) -> Size {
+        let base = if self.show_settings { Size::new(700.0, 780.0) } else { self.window_size };
+        if self.panel_open { Size::new(base.width + PANEL_WIDTH, base.height) } else { base }
+    }
+
+    fn open_audio_folder(&mut self) {
+        let Some(dir) = audio_dir() else { return };
+        let opened = std::fs::create_dir_all(&dir).and_then(|_| std::process::Command::new("explorer").arg(&dir).spawn().map(|_| ()));
+        if let Err(err) = opened {
+            self.status = format!("Ordner konnte nicht geöffnet werden: {err}");
+        }
+    }
+
+    fn select_clip(&mut self, id: u64) {
+        let deselect = self.selected_clip == Some(id);
+        self.player = None;
+        self.selected_clip = None;
+        if deselect {
+            return;
+        }
+        let Some(clip) = self.clips.iter().find(|clip| clip.id == id) else { return };
+        if clip.end.is_none() {
+            self.status = "Aufnahme läuft noch".to_string();
+            return;
+        }
+        match recording::read_wav(&clip.path) {
+            Ok((sample_rate, samples)) => match Player::new(sample_rate, samples) {
+                Ok(player) => {
+                    self.player = Some(player);
+                    self.selected_clip = Some(id);
+                }
+                Err(err) => self.status = format!("Wiedergabe nicht möglich: {err}"),
+            },
+            Err(err) => self.status = format!("Aufnahme konnte nicht geladen werden: {err}"),
+        }
     }
 
     fn ensure_enigo(&mut self) -> bool {

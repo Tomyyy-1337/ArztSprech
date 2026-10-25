@@ -1,10 +1,16 @@
 use iced::theme::Palette;
-use iced::widget::{button, column, container, pick_list, row, rich_text, scrollable, span, text, text_editor, text_input, toggler};
+use iced::widget::{button, column, container, mouse_area, pick_list, row, rich_text, scrollable, slider, span, text, text_editor, text_input, toggler};
 use iced::{Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
 use arztsprech_core::protocol::Model;
 
-use super::state::{App, Message, SYSTEM_MIC, model_label};
+use super::state::{App, Message, PANEL_WIDTH, SYSTEM_MIC, model_label};
+
+/// Formatiert Sekunden als `m:ss`.
+fn fmt_time(secs: f64) -> String {
+    let secs = secs.max(0.0) as u64;
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
 
 pub(super) fn app_theme(dark: bool) -> Theme {
     let (name, palette) = if dark {
@@ -91,6 +97,10 @@ impl App {
             .align_y(iced::alignment::Vertical::Center);
         let settings_icon = container(text("⚙").size(20)).padding(Padding { top: 4.0, ..Default::default() }).center_x(Fill).center_y(Fill);
         let settings_button = button(settings_icon).on_press(Message::ToggleSettings).style(button::primary).padding(0).width(32).height(32);
+        let panel_style: fn(&Theme, button::Status) -> button::Style = if self.panel_open { button::success } else { button::primary };
+        let panel_icon = container(text("☰").size(16)).center_x(Fill).center_y(Fill);
+        let panel_button = button(panel_icon).on_press(Message::TogglePanel).style(panel_style).padding(0).width(32).height(32);
+        status_row = status_row.push(panel_button);
         status_row = status_row.push(settings_button);
         let status_bar = container(status_row).padding([6, 10]).width(Fill).style(surface_style);
 
@@ -107,7 +117,48 @@ impl App {
         let toolbar = container(toolbar_row).padding([6, 10]).width(Fill).style(surface_style);
 
         let body = column![status_bar, self.transcript_view(), toolbar].spacing(8).padding(8);
-        container(body).width(Fill).height(Fill).into()
+        let main = container(body).width(Fill).height(Fill);
+        if self.panel_open {
+            row![main, self.clip_panel()].height(Fill).into()
+        } else {
+            main.into()
+        }
+    }
+
+    fn clip_panel(&self) -> Element<'_, Message> {
+        let mut list = column![].spacing(6);
+        for clip in self.clips.iter().rev() {
+            let end = clip.end.unwrap_or_else(|| self.started.elapsed());
+            let label = format!("{} · {}", clip.clock, fmt_time(end.saturating_sub(clip.start).as_secs_f64()));
+            let selected = self.selected_clip == Some(clip.id);
+            let style: fn(&Theme, button::Status) -> button::Style = if selected { button::success } else { button::secondary };
+            let mut entry = button(text(label).size(13)).style(style).padding([6, 10]).width(Fill);
+            if clip.end.is_some() {
+                entry = entry.on_press(Message::SelectClip(clip.id));
+            }
+            list = list.push(mouse_area(entry).on_enter(Message::HoverClip(Some(clip.id))).on_exit(Message::HoverClip(None)));
+        }
+
+        let header = row![text("Aufnahmen").size(14), button(text("Speicherort öffnen").size(12)).on_press(Message::OpenAudioFolder).style(button::secondary).padding([4, 8])]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center);
+        let mut panel = column![header, scrollable(list).width(Fill).height(Fill)].spacing(8);
+        if let Some(player) = self.player.as_ref() {
+            let pos = player.position_secs();
+            let dur = player.duration_secs();
+            let playing = !(player.is_paused() || player.is_finished());
+            let toggle_label = if playing { "Pause" } else { "Abspielen" };
+            let controls = row![
+                button(text(toggle_label).size(13)).on_press(Message::TogglePlayback).style(button::primary).padding([6, 12]),
+                text(format!("{} / {}", fmt_time(pos), fmt_time(dur))).size(12),
+            ]
+            .spacing(8)
+            .align_y(iced::alignment::Vertical::Center);
+            let timeline = slider(0.0..=dur.max(0.001), pos.min(dur), Message::Seek).step(0.1);
+            panel = panel.push(column![controls, timeline].spacing(6));
+        }
+
+        container(panel).padding(8).width(PANEL_WIDTH).height(Fill).style(surface_style).into()
     }
 
     fn settings_view(&self) -> Element<'_, Message> {
@@ -224,11 +275,31 @@ impl App {
     }
 
     fn transcript_view(&self) -> Element<'_, Message> {
-        let mut spans = vec![span::<(), _>(self.text.clone())];
+        let window = self.hovered_clip.and_then(|id| self.clips.iter().find(|clip| clip.id == id)).map(|clip| {
+            (clip.start, clip.end.unwrap_or_else(|| self.started.elapsed()))
+        });
+        let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+        let mut spans = Vec::new();
+        let mut cursor = 0;
+        for segment in &self.segments {
+            if segment.range.start > cursor {
+                spans.push(span::<(), iced::Font>(self.text[cursor..segment.range.start].to_string()));
+            }
+            let in_clip = window.is_some_and(|(start, end)| segment.at >= start && segment.at < end);
+            let mut piece = span::<(), iced::Font>(self.text[segment.range.clone()].to_string());
+            if in_clip {
+                piece = piece.font(bold);
+            }
+            spans.push(piece);
+            cursor = segment.range.end;
+        }
+        if cursor < self.text.len() {
+            spans.push(span::<(), iced::Font>(self.text[cursor..].to_string()));
+        }
         if !self.partial.is_empty() {
             let sep = if self.text.is_empty() { "" } else { " " };
             let partial_color = if self.dark { rgb(120, 124, 135) } else { rgb(130, 134, 145) };
-            spans.push(span::<(), _>(format!("{sep}{}", self.partial)).color(partial_color));
+            spans.push(span::<(), iced::Font>(format!("{sep}{}", self.partial)).color(partial_color));
         }
         container(
             scrollable(rich_text(spans).width(Fill))
