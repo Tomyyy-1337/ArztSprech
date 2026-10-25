@@ -8,3 +8,11 @@ LIBCLANG_PATH = { value = "C:\\Program Files\\LLVM\\bin", force = true }
 VULKAN_SDK = "C:\\VulkanSDK\\1.4.363.0"
 
 CARGO_TARGET_DIR='C:\avk'
+
+[profile.optimized]
+inherits = "release"
+opt-level = 3
+strip = "symbols"
+panic = "abort"
+lto = true
+codegen-units = 1

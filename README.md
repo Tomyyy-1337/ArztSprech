@@ -18,6 +18,9 @@ Client Only
  
 ```bash
 cargo run --release -p arztsprech-client --features remote
+
+# Optimized build for deployment
+cargo run --profile optimized -p arztsprech-client --features remote
 ```
 
 ## Setup
