@@ -278,7 +278,8 @@ impl App {
         let window = self.hovered_clip.and_then(|id| self.clips.iter().find(|clip| clip.id == id)).map(|clip| {
             (clip.start, clip.end.unwrap_or_else(|| self.started.elapsed()))
         });
-        let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+        // Highlight via background instead of bold: a bolder font changes glyph metrics and reflows the text.
+        let highlight = if self.dark { Color::from_rgba8(255, 255, 255, 0.18) } else { Color::from_rgba8(0, 0, 0, 0.12) };
         let mut spans = Vec::new();
         let mut cursor = 0;
         for segment in &self.segments {
@@ -288,7 +289,7 @@ impl App {
             let in_clip = window.is_some_and(|(start, end)| segment.at >= start && segment.at < end);
             let mut piece = span::<(), iced::Font>(self.text[segment.range.clone()].to_string());
             if in_clip {
-                piece = piece.font(bold);
+                piece = piece.background(highlight);
             }
             spans.push(piece);
             cursor = segment.range.end;
