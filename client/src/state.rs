@@ -36,6 +36,7 @@ pub enum Message {
     Clear,
     ToggleRecording(bool),
     TogglePanel,
+    PanelResized,
     OpenAudioFolder,
     SelectClip(u64),
     HoverClip(Option<u64>),
@@ -90,6 +91,8 @@ pub struct App {
     pub(super) hovered_clip: Option<u64>,
     pub(super) player: Option<Player>,
     pub(super) panel_open: bool,
+    /// Zielzustand des Panels, solange auf das Umskalieren des Fensters gewartet wird.
+    pub(super) panel_pending: Option<bool>,
     pub(super) partial: String,
     pub(super) status: String,
     pub(super) recording: bool,
@@ -145,6 +148,7 @@ pub fn boot() -> App {
         hovered_clip: None,
         player: None,
         panel_open: false,
+        panel_pending: None,
         partial: String::new(),
         status: "Mikrofon aus".to_string(),
         recording: false,
@@ -437,9 +441,23 @@ impl App {
                 self.partial.clear();
             }
             Message::TogglePanel => {
-                self.panel_open = !self.panel_open;
-                let size = self.window_target();
-                return window::latest().and_then(move |id| window::resize(id, size));
+                if self.panel_open {
+                    // Hide the panel before shrinking the window so no frame draws it in the narrower window.
+                    self.panel_open = false;
+                    let size = self.window_target();
+                    return window::latest().and_then(move |id| window::resize(id, size));
+                }
+                // Opening: the panel only appears once the window has been enlarged, so no frame draws it in the old size.
+                self.panel_pending = Some(true);
+                let size = self.window_target_for(true);
+                return window::latest().and_then(move |id| {
+                    window::resize(id, size).chain(window::size(id).map(|_| Message::PanelResized))
+                });
+            }
+            Message::PanelResized => {
+                if let Some(open) = self.panel_pending.take() {
+                    self.panel_open = open;
+                }
             }
             Message::SelectClip(id) => self.select_clip(id),
             Message::OpenAudioFolder => self.open_audio_folder(),
@@ -487,7 +505,7 @@ impl App {
                 return window::latest().and_then(move |id| window::resize(id, size));
             }
             Message::WindowResized(size) => {
-                if !self.show_settings {
+                if !self.show_settings && self.panel_pending.is_none() {
                     self.window_size = if self.panel_open { Size::new(size.width - PANEL_WIDTH, size.height) } else { size };
                 }
             }
@@ -644,8 +662,12 @@ impl App {
     }
 
     fn window_target(&self) -> Size {
+        self.window_target_for(self.panel_open)
+    }
+
+    fn window_target_for(&self, panel_open: bool) -> Size {
         let base = if self.show_settings { Size::new(700.0, 780.0) } else { self.window_size };
-        if self.panel_open { Size::new(base.width + PANEL_WIDTH, base.height) } else { base }
+        if panel_open && !self.show_settings { Size::new(base.width + PANEL_WIDTH, base.height) } else { base }
     }
 
     fn open_audio_folder(&mut self) {

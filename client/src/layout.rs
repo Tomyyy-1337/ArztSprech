@@ -139,10 +139,12 @@ impl App {
             list = list.push(mouse_area(entry).on_enter(Message::HoverClip(Some(clip.id))).on_exit(Message::HoverClip(None)));
         }
 
-        let header = row![text("Aufnahmen").size(14), button(text("Speicherort öffnen").size(12)).on_press(Message::OpenAudioFolder).style(button::secondary).padding([4, 8])]
+        let header = row![text("Aufnahmen").size(14).width(Fill), button(text("Speicherort öffnen").size(12)).on_press(Message::OpenAudioFolder).style(button::secondary).padding([4, 8])]
             .spacing(8)
+            .height(32)
             .align_y(iced::alignment::Vertical::Center);
-        let mut panel = column![header, scrollable(list).width(Fill).height(Fill)].spacing(8);
+        let header_bar = container(header).padding([6, 10]).width(Fill).style(surface_style);
+        let mut content = column![scrollable(list).width(Fill).height(Fill)].spacing(8);
         if let Some(player) = self.player.as_ref() {
             let pos = player.position_secs();
             let dur = player.duration_secs();
@@ -155,10 +157,12 @@ impl App {
             .spacing(8)
             .align_y(iced::alignment::Vertical::Center);
             let timeline = slider(0.0..=dur.max(0.001), pos.min(dur), Message::Seek).step(0.1);
-            panel = panel.push(column![controls, timeline].spacing(6));
+            content = content.push(column![controls, timeline].spacing(6));
         }
 
-        container(panel).padding(8).width(PANEL_WIDTH).height(Fill).style(surface_style).into()
+        let list_panel = container(content).padding(8).width(Fill).height(Fill).style(surface_style);
+        let panel = column![header_bar, list_panel].spacing(8);
+        container(panel).padding(Padding { top: 8.0, right: 8.0, bottom: 8.0, left: 0.0 }).width(PANEL_WIDTH).height(Fill).into()
     }
 
     fn settings_view(&self) -> Element<'_, Message> {
